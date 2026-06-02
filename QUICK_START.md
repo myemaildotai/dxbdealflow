@@ -1,4 +1,4 @@
-# 🚀 Quick Start - Deal Exchange Platform MVP
+# 🚀 Quick Start - Deal Exchange Platform MVP 
 
 ## You Have a Complete MVP! ✅
 
