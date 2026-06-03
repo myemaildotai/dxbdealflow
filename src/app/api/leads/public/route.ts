@@ -118,6 +118,8 @@ export async function POST(request: NextRequest) {
       await notifyBrokerPublicEnquiry({
         brokerName: getFullName(listingOwner.first_name, listingOwner.last_name),
         brokerEmail: listingOwner.email,
+        brokerUserId: listingOwner.id,
+        leadId: lead.id,
         contactName,
         contactEmail,
         contactPhone: contactPhone || null,

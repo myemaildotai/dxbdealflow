@@ -1,7 +1,7 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE IF NOT EXISTS public.coming_soon_role_options (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL UNIQUE,
   display_order INTEGER NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS public.coming_soon_role_options (
 );
 
 CREATE TABLE IF NOT EXISTS public.coming_soon_registrations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   first_name TEXT NOT NULL,
   last_name TEXT NOT NULL,
   email TEXT NOT NULL,

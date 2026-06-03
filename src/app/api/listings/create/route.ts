@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase, jsonError, requireApprovedBroker } from "@/lib/deal-server";
 import { parseNumber } from "@/lib/deal-utils";
 import { getListingDocumentValidationError } from "@/lib/document-upload";
-// import { notifyAdminListingCreated } from "@/lib/email-notifications";
+import { triggerListingSubmittedEmail } from "@/lib/email-notifications";
 import { getHandoverDateValidationMessage } from "@/lib/handover-date";
 import { getImageUploadValidationError } from "@/lib/image-upload";
 import { normalizeListingMediaUrl } from "@/lib/listing-media";
@@ -189,15 +189,13 @@ export async function POST(request: NextRequest) {
     metadata: { creditsUsed: 1 },
   });
 
-  // const { data: area } = await supabase.from("areas").select("name, city").eq("id", areaId).maybeSingle();
-  // notifyAdminListingCreated({
-  //   brokerName: getFullName(auth.user.first_name, auth.user.last_name),
-  //   listingTitle: title,
-  //   area: area ? [area.name, area.city].filter(Boolean).join(", ") : areaId,
-  //   price,
-  //   propertyType,
-  //   createdDate: new Date().toISOString(),
-  // });
+  // Email trigger: broker listing submission is pending admin approval.
+  await triggerListingSubmittedEmail({
+    listingId,
+    brokerUserId: auth.user.id,
+    brokerEmail: auth.user.email,
+    listingTitle: title,
+  });
 
   return NextResponse.json({
     success: true,

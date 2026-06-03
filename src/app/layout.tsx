@@ -5,8 +5,10 @@ import { Inter, Montserrat } from "next/font/google";
 import "react-phone-number-input/style.css";
 import "./globals.css";
 import { AuthProvider } from "@/auth/AuthProvider";
+import { FooterLegalNavigationGate } from "@/components/FooterLegalNavigationGate";
 import { MaintenanceModeGuard } from "@/components/MaintenanceModeGuard";
 import { ThemeProvider } from "@/theme/ThemeProvider";
+import { SpeedInsights } from "@vercel/speed-insights/next"
 
 const inter = Inter({
   variable: "--font-inter",
@@ -31,11 +33,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en">
       <body className={`${inter.variable} ${montserrat.variable}`}>
         <ThemeProvider>
+        <SpeedInsights/>
           <AuthProvider>
             <Suspense fallback={null}>
               <MaintenanceModeGuard />
             </Suspense>
             {children}
+            <FooterLegalNavigationGate />
           </AuthProvider>
         </ThemeProvider>
       </body>

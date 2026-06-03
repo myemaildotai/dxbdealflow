@@ -2,7 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { ComponentType, FormEvent, ReactNode, useState } from "react";
+import { ComponentType, FormEvent, useState } from "react";
+import { FooterLegalNavigation } from "@/components/FooterLegalNavigation";
 
 type IconProps = {
   className?: string;
@@ -65,7 +66,8 @@ export default function NotFound() {
   };
 
   return (
-    <main className="min-h-screen w-full overflow-x-hidden bg-gradient-to-br from-white via-[#faf7f2] to-[#f3efe7] text-[#0F172A]">
+    <>
+      <main className="min-h-screen w-full overflow-x-hidden bg-gradient-to-br from-white via-[#faf7f2] to-[#f3efe7] text-[#0F172A]">
   <section className="relative w-full overflow-hidden min-h-[640px] sm:min-h-[680px] md:min-h-[720px] lg:min-h-[720px]">
     <div className="pointer-events-none absolute inset-y-0 right-0 w-full">
       <Image
@@ -284,40 +286,10 @@ export default function NotFound() {
       </div>
     </section> */}
 
-    <footer className="mt-6 border-t border-[#E5DACA] px-1 pt-6">
-      <div className="grid gap-6 text-center md:grid-cols-[1fr_auto_1fr] md:items-center md:text-left lg:flex lg:items-center lg:justify-between">
-        <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-center sm:text-left md:justify-start">
-          <div className="relative h-10 w-[126px] shrink-0">
-            <Image
-              src="/assets/Logo-Blue.png"
-              alt="DXB Deal Flow"
-              fill
-              sizes="126px"
-              className="object-contain object-left"
-            />
-          </div>
-
-          <p className="max-w-[320px] text-sm leading-6 text-slate-500">
-            DXB Deal Flow is a private platform for verified real estate
-            professionals only.
-          </p>
-        </div>
-
-        <div className="flex items-center justify-center gap-3">
-          <SocialBadge icon={<InstagramIcon className="h-5 w-5" />} />
-          <SocialBadge icon={<LinkedInIcon className="h-5 w-5" />} />
-          <SocialBadge icon={<YouTubeIcon className="h-7 w-7" />} />
-        </div>
-
-        <p className="text-center text-sm leading-6 text-slate-500 md:text-right">
-          &copy; 2024 DXB Deal Flow.
-          <br />
-          All rights reserved.
-        </p>
-      </div>
-    </footer>
   </div>
-</main>
+      </main>
+      <FooterLegalNavigation />
+    </>
   );
 }
 
@@ -350,14 +322,6 @@ function ActionCard({
         <ArrowRightIcon className="h-5 w-5 transition duration-300 group-hover:translate-x-1" />
       </span>
     </Link>
-  );
-}
-
-function SocialBadge({ icon }: { icon: ReactNode }) {
-  return (
-    <span className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#E5DACA] bg-white/80 text-slate-500 shadow-sm">
-      {icon}
-    </span>
   );
 }
 
@@ -596,76 +560,3 @@ function BirdIcon({ className = "h-4 w-4" }: IconProps) {
   );
 }
 
-function InstagramIcon({ className = "h-5 w-5" }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <rect
-        x="3.25"
-        y="3.25"
-        width="17.5"
-        height="17.5"
-        rx="5"
-        stroke="currentColor"
-        strokeWidth="1.7"
-      />
-      <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.7" />
-      <circle cx="17" cy="7" r="1.1" fill="currentColor" />
-    </svg>
-  );
-}
-
-function LinkedInIcon({ className = "h-5 w-5" }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <rect
-        x="3.25"
-        y="3.25"
-        width="17.5"
-        height="17.5"
-        rx="3.75"
-        stroke="currentColor"
-        strokeWidth="1.7"
-      />
-      <path
-        d="M8.2 10.2V16"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8.2 8.1C8.78 8.1 9.25 7.63 9.25 7.05C9.25 6.47 8.78 6 8.2 6C7.62 6 7.15 6.47 7.15 7.05C7.15 7.63 7.62 8.1 8.2 8.1Z"
-        fill="currentColor"
-      />
-      <path
-        d="M12 16V12.8C12 11.36 12.86 10.2 14.52 10.2C16.18 10.2 16.8 11.31 16.8 12.99V16"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M12 10.2V16"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function YouTubeIcon({ className = "h-5 w-5" }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
-      <path
-        d="M20.25 8.44C20.03 7.59 19.36 6.92 18.51 6.7C17 6.25 12 6.25 12 6.25C12 6.25 7 6.25 5.49 6.7C4.64 6.92 3.97 7.59 3.75 8.44C3.3 9.95 3.3 12 3.3 12C3.3 12 3.3 14.05 3.75 15.56C3.97 16.41 4.64 17.08 5.49 17.3C7 17.75 12 17.75 12 17.75C12 17.75 17 17.75 18.51 17.3C19.36 17.08 20.03 16.41 20.25 15.56C20.7 14.05 20.7 12 20.7 12C20.7 12 20.7 9.95 20.25 8.44Z"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10.25 9.75L14.5 12L10.25 14.25V9.75Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}

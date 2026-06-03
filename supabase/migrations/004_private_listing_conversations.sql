@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS chat_conversations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   listing_id UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   broker_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
 );
 
 CREATE TABLE IF NOT EXISTS chat_conversation_messages (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id UUID NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
   sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   content TEXT NOT NULL,

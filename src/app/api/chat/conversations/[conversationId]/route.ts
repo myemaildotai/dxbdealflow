@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase, jsonError, requireApprovedBroker } from "@/lib/deal-server";
 import { fetchChatUserSummaries, hydrateMessages } from "@/lib/platform-server-data";
 import { isActiveListingStatus } from "@/lib/deal-utils";
+import { triggerNewMessageEmail } from "@/lib/email-notifications";
 import type { ChatMessage, Listing } from "@/lib/deal-types";
 
 const DEFAULT_MESSAGE_LIMIT = 20;
@@ -334,6 +335,15 @@ export async function POST(request: NextRequest, { params }: { params: { convers
   }
 
   const receiverId = context.conversation.owner_user_id === auth.user.id ? context.conversation.broker_user_id : context.conversation.owner_user_id;
+
+  // Email trigger: notify only the receiving broker, with conversation-level throttling.
+  await triggerNewMessageEmail({
+    conversationId: sentMessage.conversation_id,
+    messageId: sentMessage.message_id,
+    senderId: auth.user.id,
+    receiverId: sentMessage.receiver_id || receiverId,
+    listingId: context.conversation.listing_id,
+  });
 
   return NextResponse.json({
     success: true,

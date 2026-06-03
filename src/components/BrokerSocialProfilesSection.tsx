@@ -7,6 +7,7 @@ type BrokerSocialProfilesSectionProps = {
   linkedinValue: string;
   instagramError?: string;
   linkedinError?: string;
+  instagramRequired?: boolean;
   onInstagramChange: (value: string) => void;
   onLinkedInChange: (value: string) => void;
   onInstagramBlur?: () => void;
@@ -22,6 +23,10 @@ function FieldError({ message }: { message?: string }) {
   }
 
   return <p className="mt-1.5 break-words text-xs text-rose-400 sm:mt-2">{message}</p>;
+}
+
+function RequiredAsterisk() {
+  return <span className="ml-1 text-rose-400">*</span>;
 }
 
 function InstagramIcon({ className = "h-5 w-5" }: { className?: string }) {
@@ -135,6 +140,7 @@ function SocialInput({
   error,
   icon,
   prefix,
+  required,
   onChange,
   onBlur,
   disabled,
@@ -146,6 +152,7 @@ function SocialInput({
   error?: string;
   icon: ReactNode;
   prefix?: string;
+  required?: boolean;
   onChange: (value: string) => void;
   onBlur?: () => void;
   disabled?: boolean;
@@ -154,6 +161,7 @@ function SocialInput({
     <div className="min-w-0">
       <label className="label" htmlFor={id}>
         {label}
+        {required ? <RequiredAsterisk /> : null}
       </label>
       <div className="relative">
         {/* Icon */}
@@ -177,6 +185,7 @@ function SocialInput({
           placeholder={placeholder}
           autoComplete="off"
           disabled={disabled}
+          required={required}
         />
       </div>
       <FieldError message={error} />
@@ -189,13 +198,12 @@ export function BrokerSocialProfilesSection({
   linkedinValue,
   instagramError,
   linkedinError,
+  instagramRequired = false,
   onInstagramChange,
   onLinkedInChange,
   onInstagramBlur,
   onLinkedInBlur,
   disabled,
-
- 
 }: BrokerSocialProfilesSectionProps) {
   return (
     <div className="rounded-[12px] border border-brand-line bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-4 shadow-[0_14px_30px_rgba(15,42,95,0.05)] sm:p-6">
@@ -207,30 +215,31 @@ export function BrokerSocialProfilesSection({
 
       <div className="mt-3 grid gap-3 sm:mt-4 sm:gap-4 lg:grid-cols-2 lg:gap-5">
         <SocialInput
-  id="broker-social-instagram"
-  label="Instagram Handle"
-  placeholder="yourhandle"
-  prefix="instagram.com/"
-  value={instagramValue}
-  error={instagramError}
-  icon={<InstagramIcon className="h-7 w-7" />}
-  onChange={onInstagramChange}
-  onBlur={onInstagramBlur}
-  disabled={disabled}
-/>
+          id="broker-social-instagram"
+          label="Instagram Handle"
+          placeholder="yourhandle"
+          prefix="instagram.com/"
+          value={instagramValue}
+          error={instagramError}
+          icon={<InstagramIcon className="h-7 w-7" />}
+          required={instagramRequired}
+          onChange={onInstagramChange}
+          onBlur={onInstagramBlur}
+          disabled={disabled}
+        />
 
-<SocialInput
-  id="broker-social-linkedin"
-  label="LinkedIn Handle"
-  placeholder="yourprofile"
-  prefix="linkedin.com/in/"
-  value={linkedinValue}
-  error={linkedinError}
-  icon={<LinkedInIcon className="h-7 w-7" />}
-  onChange={onLinkedInChange}
-  onBlur={onLinkedInBlur}
-  disabled={disabled}
-/>
+        <SocialInput
+          id="broker-social-linkedin"
+          label="LinkedIn Handle"
+          placeholder="yourprofile"
+          prefix="linkedin.com/in/"
+          value={linkedinValue}
+          error={linkedinError}
+          icon={<LinkedInIcon className="h-7 w-7" />}
+          onChange={onLinkedInChange}
+          onBlur={onLinkedInBlur}
+          disabled={disabled}
+        />
       </div>
     </div>
   );

@@ -14,6 +14,7 @@ import { useAuth } from "@/auth/useAuth";
 import { getSafeAdminReturnHref } from "@/lib/admin-navigation";
 import { apiFetch } from "@/lib/deal-api";
 import { invalidateAdminOverviewCaches, invalidateListingCaches } from "@/lib/client-cache";
+import { NEW_DEAL_ALERT_COOLDOWN_DAYS, getNewDealAlertCooldownState } from "@/lib/email-alert-config";
 import type { AdminListingDetail } from "@/lib/deal-types";
 import {
   cn,
@@ -37,6 +38,18 @@ const RESPONSIVE_SUBTLE_ROOMY_CLASS =
   "min-w-0 max-w-full border-t border-brand-line/80 bg-transparent px-0 py-4 text-brand-ink shadow-none md:rounded-[8px] md:border md:border-brand-line/80 md:bg-brand-panel-soft md:p-5 md:shadow-[0_8px_24px_rgba(15,42,95,0.05)]";
 const COMPACT_OVERLAY_BADGE_CLASS =
   "px-2 py-1 text-[9px] tracking-[0.12em] md:px-3 md:py-1.5 md:text-[11px] md:tracking-[0.18em]";
+
+type NewDealAlertTriggerResponse = {
+  success: boolean;
+  result: {
+    attempted: number;
+    sentOrQueued: number;
+    skipped: number;
+    failed: number;
+    lastSentAt?: string | null;
+    availableAt?: string | null;
+  };
+};
 
 function SectionHeader({
   kicker,
@@ -323,6 +336,51 @@ function ApprovalSparkIcon({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
+function DealAlertIcon({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M5.5 14.25H4.75A2 2 0 0 1 2.75 12.25V11.75A2 2 0 0 1 4.75 9.75H5.5L17.25 5.25V18.75L5.5 14.25Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7.25 14.9L8.3 18.1C8.54 18.82 9.2 19.25 9.9 19.25H10.75"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M20.25 9.5V14.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function formatNewDealAlertDateTime(value: string | Date | null | undefined) {
+  if (!value) {
+    return "TBD";
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "TBD";
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  })
+    .format(date)
+    .replace(/\b(am|pm)\b/gi, (match) => match.toUpperCase());
+}
+
 function ApprovalSuccessBar() {
   return (
     <div className="mt-5 overflow-hidden rounded-[18px] border border-[#cae8d3] bg-[linear-gradient(180deg,#f4fcf5_0%,#ecf8ef_100%)] shadow-[0_14px_30px_rgba(56,142,93,0.08)]">
@@ -490,8 +548,12 @@ export default function AdminListingDetailPage() {
   const [pageLoading, setPageLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<{ action: string; label: string; prompt: string } | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [dealAlertConfirmOpen, setDealAlertConfirmOpen] = useState(false);
+  const [dealAlertLoading, setDealAlertLoading] = useState(false);
+  const [dealAlertNow, setDealAlertNow] = useState(() => new Date());
   const [showApprovalSuccessBar, setShowApprovalSuccessBar] = useState(false);
   const detailRequestIdRef = useRef(0);
+  const detailRef = useRef<AdminListingDetail | null>(null);
   const listingId = params?.id;
   const rawReturnTo = searchParams?.get("returnTo") || null;
   const adminReturnHref = useMemo(() => getSafeAdminReturnHref(rawReturnTo, "/admin"), [rawReturnTo]);
@@ -511,6 +573,7 @@ export default function AdminListingDetailPage() {
     detailRequestIdRef.current = requestId;
     const payload = await apiFetch<AdminListingDetail>(`/api/admin/listings/${listingId}`);
     if (detailRequestIdRef.current === requestId) {
+      detailRef.current = payload;
       setDetail(payload);
     }
     return payload;
@@ -521,9 +584,12 @@ export default function AdminListingDetailPage() {
 
     if (!loading && (!user || !isAdmin(user))) {
       detailRequestIdRef.current += 1;
+      detailRef.current = null;
       setDetail(null);
       setPendingAction(null);
       setActionLoading(false);
+      setDealAlertConfirmOpen(false);
+      setDealAlertLoading(false);
       setShowApprovalSuccessBar(false);
       setPageLoading(false);
       router.replace(getDefaultRouteForUser(user));
@@ -531,7 +597,14 @@ export default function AdminListingDetailPage() {
     }
 
     if (!loading && user && listingId) {
-      setPageLoading(true);
+      const hasCurrentDetail = detailRef.current?.listing.id === listingId;
+
+      if (!hasCurrentDetail) {
+        setPageLoading(true);
+      } else {
+        setPageLoading(false);
+      }
+
       loadDetail()
         .catch((error) => enqueueSnackbar(error instanceof Error ? error.message : "Failed to load listing detail.", { variant: "error" }))
         .finally(() => {
@@ -545,6 +618,14 @@ export default function AdminListingDetailPage() {
       isActive = false;
     };
   }, [enqueueSnackbar, loadDetail, loading, listingId, router, user]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setDealAlertNow(new Date());
+    }, 30_000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   const runAction = async (action: string) => {
     if (!detail) return;
@@ -567,7 +648,59 @@ export default function AdminListingDetailPage() {
     }
   };
 
-  const listing = detail?.listing || null;
+  const sendNewDealAlert = async () => {
+    if (!detail) return;
+
+    setDealAlertLoading(true);
+    try {
+      const response = await apiFetch<NewDealAlertTriggerResponse>("/api/admin/email/deal-alerts", {
+        method: "POST",
+        body: JSON.stringify({ listingId: detail.listing.id }),
+      });
+
+      if (response.result.lastSentAt) {
+        setDetail((current) =>
+          current
+            ? {
+                ...current,
+                listing: {
+                  ...current.listing,
+                  last_new_deal_alert_sent_at: response.result.lastSentAt || null,
+                },
+              }
+            : current
+        );
+      }
+
+      invalidateListingCaches(detail.listing.id);
+      invalidateAdminOverviewCaches();
+      setDealAlertConfirmOpen(false);
+      setDealAlertNow(new Date());
+
+      const brokerCount = response.result.sentOrQueued;
+      enqueueSnackbar(
+        brokerCount > 0
+          ? `New Deal Alert triggered for ${brokerCount} eligible broker${brokerCount === 1 ? "" : "s"}.`
+          : "New Deal Alert triggered. No eligible brokers were available.",
+        { variant: "success" }
+      );
+
+      try {
+        await loadDetail();
+      } catch (refreshError) {
+        enqueueSnackbar(
+          refreshError instanceof Error ? refreshError.message : "New Deal Alert sent, but listing state could not be refreshed.",
+          { variant: "warning" }
+        );
+      }
+    } catch (error) {
+      enqueueSnackbar(error instanceof Error ? error.message : "Failed to send Deal Alert.", { variant: "error" });
+    } finally {
+      setDealAlertLoading(false);
+    }
+  };
+
+  const listing = detail && detail.listing.id === listingId ? detail.listing : null;
   const moderationButtons = useMemo(() => {
     if (!listing || listing.deleted_at) return [];
 
@@ -657,7 +790,7 @@ export default function AdminListingDetailPage() {
     return () => window.clearTimeout(timeoutId);
   }, [listing]);
 
-  if (loading || pageLoading || !user) {
+  if (!listing && (loading || pageLoading || !user)) {
     return <LoadingScreen label="Loading listing detail..." />;
   }
 
@@ -680,6 +813,11 @@ export default function AdminListingDetailPage() {
   const statusTone = listing.deleted_at ? "deleted" : listing.status;
   const snapshotStatusKey = statusTone as SnapshotStatusKey;
   const visibleInBrowseListings = !listing.deleted_at && listing.is_visible && isActiveListingStatus(listing.status);
+  const newDealAlertCooldownState = getNewDealAlertCooldownState(listing.last_new_deal_alert_sent_at, dealAlertNow);
+  const canSendNewDealAlert = visibleInBrowseListings && !newDealAlertCooldownState.isCoolingDown;
+  const newDealAlertAvailableAtLabel = newDealAlertCooldownState.availableAt
+    ? formatNewDealAlertDateTime(newDealAlertCooldownState.availableAt)
+    : null;
   const snapshotStatusMeta = getSnapshotStatusMeta(snapshotStatusKey, visibleInBrowseListings);
   const showApprovedTimestamp =
     snapshotStatusKey === "approved" ||
@@ -714,35 +852,13 @@ export default function AdminListingDetailPage() {
       helper: `${documents.length} document${documents.length === 1 ? "" : "s"} attached.`,
     },
   ];
-  const lifecycleModerationButton = moderationButtons.find(
-    (button) => button.action === "deactivate_listing" || button.action === "reactivate_listing"
-  );
-  const remainingModerationButtons = lifecycleModerationButton
-    ? moderationButtons.filter((button) => button.action !== lifecycleModerationButton.action)
-    : moderationButtons;
+  const showNewDealAlertAction = visibleInBrowseListings;
+  const hasListingActions = showNewDealAlertAction || moderationButtons.length > 0;
 
   return (
     <AppShell mainClassName="!max-w-[1540px] xl:!px-10">
-      <div className="flex min-w-0 items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         {backToAdminButton}
-
-        {lifecycleModerationButton ? (
-          <button
-            key={lifecycleModerationButton.action}
-            type="button"
-            className={cn(lifecycleModerationButton.className, "shrink-0")}
-            onClick={() =>
-              setPendingAction({
-                action: lifecycleModerationButton.action,
-                label: lifecycleModerationButton.label,
-                prompt: lifecycleModerationButton.prompt,
-              })
-            }
-            disabled={actionLoading}
-          >
-            {lifecycleModerationButton.label}
-          </button>
-        ) : null}
       </div>
 
       <div className="mt-5 flex flex-col gap-4 md:gap-5 xl:flex-row xl:items-end xl:justify-between">
@@ -776,24 +892,43 @@ export default function AdminListingDetailPage() {
           </p>
         </div>
 
-        {remainingModerationButtons.length ? (
-          <div className="grid w-full gap-2 md:flex md:flex-wrap md:gap-3 xl:w-auto xl:justify-end">
-            {remainingModerationButtons.map((button) => (
-              <button
-                key={button.action}
-                type="button"
-                className={cn(button.className, "w-full max-w-full md:w-auto")}
-                onClick={() => setPendingAction({ action: button.action, label: button.label, prompt: button.prompt })}
-                disabled={actionLoading}
-              >
-                {button.label}
-              </button>
-            ))}
+        {hasListingActions ? (
+          <div className="flex w-full min-w-0 flex-col gap-2 md:items-start xl:w-auto">
+            <div className="grid w-full gap-2 md:flex md:flex-wrap md:gap-3 xl:w-auto xl:justify-end">
+              {showNewDealAlertAction ? (
+                <button
+                  type="button"
+                  className="btn-primary w-full max-w-full md:w-auto gap-2"
+                  onClick={() => setDealAlertConfirmOpen(true)}
+                  disabled={!canSendNewDealAlert || dealAlertLoading}
+                >
+                  <DealAlertIcon className="h-4 w-4 shrink-0" />
+                  <span>{dealAlertLoading ? "Sending..." : "Send Deal Alert"}</span>
+                </button>
+              ) : null}
+
+              {moderationButtons.map((button) => (
+                <button
+                  key={button.action}
+                  type="button"
+                  className={cn(button.className, "w-full max-w-full md:w-auto")}
+                  onClick={() => setPendingAction({ action: button.action, label: button.label, prompt: button.prompt })}
+                  disabled={actionLoading}
+                >
+                  {button.label}
+                </button>
+              ))}
+            </div>
+
+            {showNewDealAlertAction ? (
+              <p className="max-w-full break-words text-xs font-medium leading-5 text-brand-slate md:pl-1">{newDealAlertCooldownState.isCoolingDown && newDealAlertAvailableAtLabel ? (
+                  <span className="text-[#875f0f]">Available on: {newDealAlertAvailableAtLabel}</span>
+                ) : null}
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>
-
-      
 
       {listing.deleted_at ? (
         <div className="mt-5 rounded-[12px] border border-[#f0d8a8] bg-[#fff8e7] px-4 py-4 text-sm leading-6 text-[#875f0f] shadow-[0_12px_28px_rgba(145,101,29,0.08)] md:mt-6 md:px-5">
@@ -1074,6 +1209,41 @@ export default function AdminListingDetailPage() {
           </section>
         </aside>
       </div>
+
+      {dealAlertConfirmOpen ? (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center overflow-x-hidden bg-slate-950/60 p-2 sm:items-center sm:p-4">
+          <div className="panel max-h-[calc(100dvh-1rem)] w-full max-w-lg overflow-x-hidden overflow-y-auto p-3 sm:max-h-[calc(100vh-2rem)] sm:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.3em] text-brand-orange">Confirm Email Alert</p>
+                <h3 className="mt-2 text-2xl font-semibold text-brand-navy">Send Deal Alert to eligible brokers</h3>
+                <p className="mt-2 text-sm leading-6 text-brand-slate">
+                  The alert will be available again after {NEW_DEAL_ALERT_COOLDOWN_DAYS} days.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => (!dealAlertLoading ? setDealAlertConfirmOpen(false) : null)}
+                className="modal-close-button"
+                disabled={dealAlertLoading}
+                aria-label="Close New Deal Alert confirmation"
+              >
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+
+            <div className="mt-6 flex flex-col-reverse gap-3 md:flex-row md:justify-end">
+              <button type="button" className="btn-secondary w-full md:w-auto" onClick={() => setDealAlertConfirmOpen(false)} disabled={dealAlertLoading}>
+                Cancel
+              </button>
+              <button type="button" className="btn-primary w-full gap-2 md:w-auto" onClick={sendNewDealAlert} disabled={dealAlertLoading || !canSendNewDealAlert}>
+                <DealAlertIcon className="h-4 w-4 shrink-0" />
+                <span>{dealAlertLoading ? "Sending..." : "Send Alert"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {pendingAction ? (
         <div className="fixed inset-0 z-[100] flex items-end justify-center overflow-x-hidden bg-slate-950/60 p-2 sm:items-center sm:p-4">

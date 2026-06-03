@@ -8,7 +8,12 @@ import {
 } from "@/lib/admin-priority-queue-server";
 import { getServiceSupabase, jsonError, requireAdmin } from "@/lib/deal-server";
 import { getFullName } from "@/lib/deal-utils";
-import { notifyBrokerApplicationDecision, notifyBrokerListingDecision } from "@/lib/email-notifications";
+import { runEmailWorkflowInBackground } from "@/lib/email-service";
+import {
+  triggerBrokerVerificationSuccessEmail,
+  triggerListingApprovedEmail,
+  triggerRequirementMatchFoundForListing,
+} from "@/lib/email-notifications";
 import type { Listing, PlatformUser } from "@/lib/deal-types";
 
 const BROKER_ACTIONS = new Set(["approve_application", "reject_application", "suspend_broker", "reactivate_broker"]);
@@ -49,7 +54,6 @@ export async function POST(request: NextRequest) {
     let listing:
       | Pick<Listing, "id" | "title" | "status" | "created_at" | "deleted_at" | "created_by">
       | null = null;
-    let listingOwner: Pick<PlatformUser, "id" | "email" | "first_name" | "last_name"> | null = null;
 
     if (BROKER_ACTIONS.has(action)) {
       const { data } = await supabase
@@ -81,16 +85,6 @@ export async function POST(request: NextRequest) {
       if (listing.deleted_at) {
         return jsonError("Deleted listings cannot be moderated.", 400);
       }
-
-      const { data: ownerData } = await supabase
-        .from("users")
-        .select("id, email, first_name, last_name")
-        .eq("id", listing.created_by)
-        .maybeSingle();
-
-      // Reserved for future email notification implementation
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      listingOwner = (ownerData as Pick<PlatformUser, "id" | "email" | "first_name" | "last_name"> | null) || null;
     }
 
     switch (action) {
@@ -116,11 +110,10 @@ export async function POST(request: NextRequest) {
         });
         await logActivity(auth.user.id, "broker_application_approved", "users", targetId, { notes: notes || null });
         if (brokerUser) {
-          await notifyBrokerApplicationDecision({
+          await triggerBrokerVerificationSuccessEmail({
+            userId: brokerUser.id,
             brokerName: getFullName(brokerUser.first_name, brokerUser.last_name),
             email: brokerUser.email,
-            status: "approved",
-            notes: notes || null,
           });
         }
         break;
@@ -140,14 +133,6 @@ export async function POST(request: NextRequest) {
           actingAdminUserId: auth.user.id,
         });
         await logActivity(auth.user.id, "broker_application_rejected", "users", targetId, { notes: notes || null });
-        if (brokerUser) {
-          await notifyBrokerApplicationDecision({
-            brokerName: getFullName(brokerUser.first_name, brokerUser.last_name),
-            email: brokerUser.email,
-            status: "rejected",
-            notes: notes || null,
-          });
-        }
         break;
       }
       case "suspend_broker": {
@@ -189,14 +174,17 @@ export async function POST(request: NextRequest) {
           actingAdminUserId: auth.user.id,
         });
         await logActivity(auth.user.id, "listing_approved", "listings", targetId, { notes: notes || null });
-        if (listing && listingOwner) {
-          await notifyBrokerListingDecision({
-            brokerName: getFullName(listingOwner.first_name, listingOwner.last_name),
-            brokerEmail: listingOwner.email,
-            listingTitle: listing.title,
-            status: "approved",
+        // Email triggers: listing owner approval email and requirement-match alerts.
+        const approvalEmailWorkflow = Promise.all([
+          triggerListingApprovedEmail({
+            listingId: targetId,
+            adminUserId: auth.user.id,
             notes: notes || null,
-          });
+          }),
+          triggerRequirementMatchFoundForListing({ listingId: targetId }),
+        ]);
+        if (!runEmailWorkflowInBackground(approvalEmailWorkflow, "admin-approve-listing")) {
+          await approvalEmailWorkflow;
         }
         break;
       }
@@ -213,15 +201,6 @@ export async function POST(request: NextRequest) {
           actingAdminUserId: auth.user.id,
         });
         await logActivity(auth.user.id, "listing_rejected", "listings", targetId, { notes: notes || null });
-        if (listing && listingOwner) {
-          await notifyBrokerListingDecision({
-            brokerName: getFullName(listingOwner.first_name, listingOwner.last_name),
-            brokerEmail: listingOwner.email,
-            listingTitle: listing.title,
-            status: "rejected",
-            notes: notes || null,
-          });
-        }
         break;
       }
       case "deactivate_listing": {

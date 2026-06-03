@@ -25,7 +25,7 @@ export function getBrokerEmailOtpCooldownCutoff() {
 }
 
 function getOtpHashSecret() {
-  const secret = process.env.EMAIL_OTP_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  const secret = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
   if (!secret) {
     throw new Error("Email OTP secret is missing.");
   }

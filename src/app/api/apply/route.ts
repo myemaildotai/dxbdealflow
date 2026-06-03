@@ -10,7 +10,7 @@ import {
 import { BROKER_BIO_MAX_LENGTH, getBrokerBioCharacterCount, normalizeBrokerBio } from "@/lib/broker-application";
 import { normalizeInstagramProfile, normalizeLinkedInProfile } from "@/lib/broker-social";
 import { isValidEmailAddress } from "@/lib/email";
-// import { notifyAdminBrokerRegistrationSubmitted } from "@/lib/email-notifications";
+import { triggerBrokerVerificationSuccessEmail, triggerManualReviewPendingEmail } from "@/lib/email-notifications";
 import { isValidInternationalPhoneNumber, normalizePhoneNumber } from "@/lib/phone";
 
 type ApplyRequestBody = {
@@ -170,7 +170,7 @@ export async function POST(request: NextRequest) {
     const requiredFields: Array<
       keyof Pick<
         ApplyRequestBody,
-        "authUserId" | "firstName" | "lastName" | "email" | "phone" | "agencyName" | "reraBrn"
+        "authUserId" | "firstName" | "lastName" | "email" | "phone" | "agencyName" | "reraBrn" | "instagramProfile"
       >
     > = [
       "authUserId",
@@ -180,6 +180,7 @@ export async function POST(request: NextRequest) {
       "phone",
       "agencyName",
       "reraBrn",
+      "instagramProfile",
     ];
 
     for (const field of requiredFields) {
@@ -477,14 +478,23 @@ export async function POST(request: NextRequest) {
 
     createdActivityLog = true;
 
-    // notifyAdminBrokerRegistrationSubmitted({
-    //   brokerName: [body.firstName, body.lastName].filter(Boolean).join(" ").trim() || "Broker",
-    //   email: body.email,
-    //   phone: body.phone,
-    //   brn: body.reraBrn,
-    //   company: body.agencyName,
-    //   registrationDate: submittedAt,
-    // });
+    const brokerName = [body.firstName, body.lastName].filter(Boolean).join(" ").trim() || "Broker";
+
+    // Email trigger: auto-approved RERA match or manual-review pending broker application.
+    if (autoApproved) {
+      await triggerBrokerVerificationSuccessEmail({
+        userId: body.authUserId,
+        email: body.email,
+        brokerName,
+      });
+    } else {
+      await triggerManualReviewPendingEmail({
+        userId: body.authUserId,
+        email: body.email,
+        brokerName,
+        verificationStatus: verification.status,
+      });
+    }
 
     return NextResponse.json({
       success: true,

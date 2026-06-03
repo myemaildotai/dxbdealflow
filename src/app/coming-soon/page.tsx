@@ -530,19 +530,6 @@ export default function ComingSoonPage() {
         </div>
       </section>
 
-      <footer className="bg-[linear-gradient(135deg,#051a37_0%,#08244d_55%,#031328_100%)] px-4 py-6 text-white shadow-[0_-20px_54px_rgba(5,26,55,0.22)] sm:px-6 xl:max-2xl:px-20">
-        <div className="mx-auto flex max-w-[1540px] flex-col items-center justify-center gap-4 text-center">
-          <div className="flex flex-col items-center gap-3 sm:flex-row">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 text-white/86">
-              <LockIcon className="h-4 w-4" />
-            </span>
-            <p className="text-[14px] leading-6 text-white">
-              DXB Deal Flow is a private platform for verified real estate professionals only.
-            </p>
-          </div>
-          <p className="text-[12px] text-white/76">&copy; 2024 DXB Deal Flow. All rights reserved.</p>
-        </div>
-      </footer>
     </main>
   );
 }

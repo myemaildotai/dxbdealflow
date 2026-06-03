@@ -4,7 +4,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Create agencies table
 CREATE TABLE IF NOT EXISTS agencies (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   rera_brn TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'suspended', 'deactivated')),
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS broker_profiles (
 
 -- Create areas table
 CREATE TABLE IF NOT EXISTS areas (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   city TEXT NOT NULL,
   slug TEXT NOT NULL UNIQUE,
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS areas (
 
 -- Create broker credits table
 CREATE TABLE IF NOT EXISTS broker_credits (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   available_credits INTEGER NOT NULL DEFAULT 0,
   used_credits INTEGER NOT NULL DEFAULT 0,
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS broker_credits (
 
 -- Create listings table
 CREATE TABLE IF NOT EXISTS listings (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   title TEXT NOT NULL,
   property_type TEXT NOT NULL CHECK (property_type IN ('apartment', 'villa', 'townhouse', 'penthouse', 'office', 'retail', 'warehouse', 'land')),
   deal_type TEXT NOT NULL CHECK (deal_type IN ('off_plan', 'secondary', 'distressed', 'urgent_sale')),
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS listings (
 
 -- Create listing images table
 CREATE TABLE IF NOT EXISTS listing_images (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   listing_id UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   file_name TEXT NOT NULL,
   storage_path TEXT NOT NULL,
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS commission_terms (
 
 -- Create requirements table
 CREATE TABLE IF NOT EXISTS requirements (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   title TEXT NOT NULL,
   deal_type TEXT NOT NULL CHECK (deal_type IN ('off_plan', 'secondary', 'distressed', 'urgent_sale')),
   property_type TEXT NOT NULL CHECK (property_type IN ('apartment', 'villa', 'townhouse', 'penthouse', 'office', 'retail', 'warehouse', 'land')),
@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS requirements (
 
 -- Create leads table
 CREATE TABLE IF NOT EXISTS leads (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   listing_id UUID REFERENCES listings(id) ON DELETE SET NULL,
   requirement_id UUID REFERENCES requirements(id) ON DELETE SET NULL,
   from_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS leads (
 
 -- Create chat messages table
 CREATE TABLE IF NOT EXISTS chat_messages (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   listing_id UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   content TEXT NOT NULL,
@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 -- Create chat participants table (to track who's in the conversation)
 CREATE TABLE IF NOT EXISTS chat_participants (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   listing_id UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   last_read_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS chat_participants (
 
 -- Create activity log table
 CREATE TABLE IF NOT EXISTS activity_log (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   actor_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
   action TEXT NOT NULL,
   target_table TEXT,
@@ -250,3 +250,8 @@ CREATE POLICY "chat_participants_select" ON chat_participants
     auth.uid() = user_id 
     OR (SELECT role FROM users WHERE id = auth.uid()) = 'admin'
   );
+
+ALTER TABLE listings
+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE;
+
+CREATE INDEX IF NOT EXISTS idx_listings_deleted_at ON listings(deleted_at);

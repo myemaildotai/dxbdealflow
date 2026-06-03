@@ -14,6 +14,7 @@ export type EmailSendResult = {
   ok: boolean;
   skipped?: boolean;
   provider?: string;
+  messageId?: string | null;
   error?: string;
 };
 
@@ -35,10 +36,6 @@ function filterValidEmailList(value: EmailRecipient | null | undefined) {
   return normalizeEmailList(value).filter(isValidEmailAddress);
 }
 
-export function getAdminNotificationRecipients() {
-  return filterValidEmailList(process.env.ADMIN_NOTIFICATION_EMAILS || process.env.ADMIN_NOTIFICATION_EMAIL || "");
-}
-
 function getEmailProviderConfig() {
   const port = Number(process.env.SMTP_PORT || 465);
   const secureValue = (process.env.SMTP_SECURE || "").trim().toLowerCase();
@@ -51,7 +48,6 @@ function getEmailProviderConfig() {
     user: process.env.SMTP_USER?.trim() || "",
     pass: process.env.SMTP_PASS || "",
     from: process.env.EMAIL_FROM?.trim() || "",
-    defaultReplyTo: process.env.EMAIL_REPLY_TO?.trim() || "",
   };
 }
 
@@ -125,9 +121,9 @@ export async function sendEmail(payload: EmailPayload): Promise<EmailSendResult>
       return { ok: false, skipped: true, provider: config.provider, error: buildMissingConfigMessage(missing) };
     }
 
-    const replyTo = filterValidEmailList(payload.replyTo || config.defaultReplyTo || undefined);
+    const replyTo = filterValidEmailList(payload.replyTo || undefined);
     const transporter = getSmtpTransporter(config);
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: config.from,
       to: to.join(", "),
       subject: payload.subject,
@@ -136,7 +132,7 @@ export async function sendEmail(payload: EmailPayload): Promise<EmailSendResult>
       ...(replyTo.length ? { replyTo: replyTo.join(", ") } : {}),
     });
 
-    return { ok: true, provider: config.provider };
+    return { ok: true, provider: config.provider, messageId: typeof info.messageId === "string" ? info.messageId : null };
   } catch (error) {
     const message = getSmtpErrorMessage(error);
     console.error("[email] Failed to send email.", {

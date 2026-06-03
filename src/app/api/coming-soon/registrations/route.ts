@@ -92,16 +92,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { error: insertError } = await supabase.from("coming_soon_registrations").insert({
-      first_name: values.first_name,
-      last_name: values.last_name,
-      email: values.email,
-      whatsapp_number: values.whatsapp_number,
-      instagram_handle: values.instagram_handle || null,
-      company_agency_name: values.company_agency_name,
-      role_id: role.id,
-      role_name: role.name,
-    });
+    const { data: registration, error: insertError } = await supabase
+      .from("coming_soon_registrations")
+      .insert({
+        first_name: values.first_name,
+        last_name: values.last_name,
+        email: values.email,
+        whatsapp_number: values.whatsapp_number,
+        instagram_handle: values.instagram_handle || null,
+        company_agency_name: values.company_agency_name,
+        role_id: role.id,
+        role_name: role.name,
+      })
+      .select("id")
+      .single();
 
     if (insertError) {
       if (insertError.code === "23505") {
@@ -118,7 +122,12 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      await notifyComingSoonInterestConfirmation({ email: values.email });
+      // Email trigger: public launch-interest registration confirmation.
+      await notifyComingSoonInterestConfirmation({
+        email: values.email,
+        registrationId: registration?.id || null,
+        source: "coming_soon_registrations",
+      });
     } catch (emailError) {
       console.error("[coming-soon] Failed to trigger interest confirmation email.", {
         error: emailError instanceof Error ? emailError.message : "Unknown email trigger error.",

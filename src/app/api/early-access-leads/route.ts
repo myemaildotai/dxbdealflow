@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase, withNoStore } from "@/lib/deal-server";
 import { EARLY_ACCESS_SOURCE, validateEarlyAccessLeadInput } from "@/lib/early-access";
+import { notifyComingSoonInterestConfirmation } from "@/lib/email-notifications";
 
 export async function POST(request: NextRequest) {
   try {
@@ -82,6 +83,13 @@ export async function POST(request: NextRequest) {
 
       throw new Error("Failed to save early access lead.");
     }
+
+    // Email trigger: early-access interest confirmation before launch.
+    await notifyComingSoonInterestConfirmation({
+      email: values.email,
+      registrationId: data.id,
+      source: "early_access_leads",
+    });
 
     return NextResponse.json(
       {
