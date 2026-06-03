@@ -565,6 +565,10 @@ export default function ApplyPage() {
       case "reraBrn":
         return nextForm.reraBrn.trim() ? "" : "RERA / BRN is required.";
       case "instagramProfile":
+        if (!nextForm.instagramProfile.trim()) {
+          return "Instagram is required.";
+        }
+
         return getBrokerSocialFieldError("instagramProfile", nextForm.instagramProfile);
       case "linkedinProfile":
         return getBrokerSocialFieldError("linkedinProfile", nextForm.linkedinProfile);
@@ -813,7 +817,7 @@ export default function ApplyPage() {
       const normalizedError = errorMessage.toLowerCase();
 
       if (normalizedError.includes("already registered")) {
-        enqueueSnackbar("This email already has an auth account. If your first submit partially succeeded, retry this form after a refresh instead of creating the account again.", {
+        enqueueSnackbar("This email already has an account.", {
           variant: "error",
         });
       } else if (normalizedError.includes("rate limit")) {
@@ -1174,6 +1178,7 @@ export default function ApplyPage() {
                     linkedinValue={form.linkedinProfile}
                     instagramError={fieldErrors.instagramProfile}
                     linkedinError={fieldErrors.linkedinProfile}
+                    instagramRequired
                     onInstagramChange={(value) => handleSocialFieldChange("instagramProfile", value)}
                     onLinkedInChange={(value) => handleSocialFieldChange("linkedinProfile", value)}
                     onInstagramBlur={() => updateFieldError("instagramProfile", form)}
@@ -1236,7 +1241,7 @@ export default function ApplyPage() {
                         <span className="min-w-0 break-words text-sm leading-6 text-brand-slate sm:text-[1.05rem] sm:leading-8">
                           I confirm that I meet the above requirements and agree to the{" "}
                           <Link
-                            href="/terms-and-conditions"
+                            href="/terms-of-use"
                             onClick={(event) => event.stopPropagation()}
                             className="font-semibold text-brand-navy transition hover:text-brand-gold"
                           >

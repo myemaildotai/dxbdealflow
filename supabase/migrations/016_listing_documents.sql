@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS public.listing_documents (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   listing_id UUID NOT NULL REFERENCES public.listings(id) ON DELETE CASCADE,
   file_name TEXT NOT NULL,
   storage_path TEXT NOT NULL,

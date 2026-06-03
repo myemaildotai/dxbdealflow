@@ -10,7 +10,7 @@ CREATE INDEX IF NOT EXISTS idx_broker_email_verifications_verified_at
   ON broker_email_verifications(verified_at);
 
 CREATE TABLE IF NOT EXISTS broker_email_verification_otps (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   email TEXT NOT NULL,
   otp_hash TEXT NOT NULL,

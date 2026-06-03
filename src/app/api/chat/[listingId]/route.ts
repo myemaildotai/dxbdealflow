@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase, jsonError, requireApprovedBroker } from "@/lib/deal-server";
 import { fetchChatUserSummaries } from "@/lib/platform-server-data";
 import { isActiveListingStatus } from "@/lib/deal-utils";
+import { triggerNewMessageEmail } from "@/lib/email-notifications";
 import type { ChatMessage, ChatUserSummary, Listing } from "@/lib/deal-types";
 
 const DEFAULT_MESSAGE_LIMIT = 20;
@@ -296,6 +297,16 @@ export async function POST(request: NextRequest, { params }: { params: { listing
   if (error || !sentMessage) {
     return jsonError(error?.message || "Failed to send message.", 500);
   }
+
+  // Email trigger: notify only the receiving broker, with conversation-level throttling.
+  await triggerNewMessageEmail({
+    conversationId: sentMessage.conversation_id,
+    messageId: sentMessage.message_id,
+    senderId: auth.user.id,
+    receiverId: sentMessage.receiver_id || context.listing.created_by,
+    listingId: params.listingId,
+    listingTitle: context.listing.title,
+  });
 
   return NextResponse.json({
     success: true,

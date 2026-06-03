@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isLegalRoute } from "./src/lib/legal-routes";
 
 const ACCESS_TOKEN_COOKIE = "dx-access-token";
 const REFRESH_TOKEN_COOKIE = "dx-refresh-token";
@@ -71,6 +72,10 @@ function isStaticAsset(pathname: string) {
 
 function canAccessDuringMaintenance(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+
+  if (isLegalRoute(pathname)) {
+    return true;
+  }
 
   if (ALLOWED_PATHS_DURING_MAINTENANCE.has(pathname)) {
     return true;
@@ -154,6 +159,7 @@ function canAccessDuringComingSoon(request: NextRequest) {
   // the Coming Soon page, admin login/auth bootstrap, Supabase callbacks, and
   // the APIs needed by the Coming Soon form itself.
   return (
+    isLegalRoute(pathname) ||
     pathname === COMING_SOON_PAGE_PATH ||
     pathname === PASSWORD_RESET_PATH ||
     isAdminSignInRequest(request) ||

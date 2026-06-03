@@ -101,6 +101,7 @@ export async function POST(request: NextRequest) {
     const emailResult = await sendBrokerEmailVerificationOtp({
       brokerName: getFullName(auth.user.first_name, auth.user.last_name),
       brokerEmail,
+      brokerUserId: auth.user.id,
       otp,
       expiresAt,
     });

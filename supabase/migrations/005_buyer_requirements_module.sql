@@ -4,11 +4,11 @@ ALTER TABLE broker_profiles
 ADD COLUMN IF NOT EXISTS id UUID;
 
 UPDATE broker_profiles
-SET id = uuid_generate_v4()
+SET id = gen_random_uuid()
 WHERE id IS NULL;
 
 ALTER TABLE broker_profiles
-ALTER COLUMN id SET DEFAULT uuid_generate_v4();
+ALTER COLUMN id SET DEFAULT gen_random_uuid();
 
 ALTER TABLE broker_profiles
 ALTER COLUMN id SET NOT NULL;
@@ -287,7 +287,7 @@ FOR DELETE USING (
 );
 
 CREATE TABLE IF NOT EXISTS requirement_matches (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   requirement_id UUID NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
   sender_broker_id UUID NOT NULL REFERENCES broker_profiles(id) ON DELETE CASCADE,
   message TEXT NOT NULL,
@@ -350,7 +350,7 @@ FOR INSERT WITH CHECK (
 );
 
 CREATE TABLE IF NOT EXISTS broker_notifications (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   recipient_broker_id UUID NOT NULL REFERENCES broker_profiles(id) ON DELETE CASCADE,
   actor_broker_id UUID REFERENCES broker_profiles(id) ON DELETE SET NULL,
   requirement_id UUID REFERENCES requirements(id) ON DELETE SET NULL,

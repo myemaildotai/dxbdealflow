@@ -173,6 +173,7 @@ export interface Listing {
   renewal_due_at: string | null;
   approved_at: string | null;
   approval_notification_read_at?: string | null;
+  last_new_deal_alert_sent_at?: string | null;
   credits_used: number;
   area?: Area | null;
   commission_terms?: CommissionTerms | null;

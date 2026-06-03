@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS broker_verifications (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   broker_number TEXT NOT NULL,
   broker_name TEXT,

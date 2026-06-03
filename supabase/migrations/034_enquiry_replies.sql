@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS public.enquiry_replies (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   enquiry_id UUID NOT NULL REFERENCES public.leads(id) ON DELETE CASCADE,
   listing_id UUID REFERENCES public.listings(id) ON DELETE SET NULL,
   broker_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,

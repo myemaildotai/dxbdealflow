@@ -10,6 +10,8 @@ import {
 } from "@/lib/deal-server";
 import { logActivity } from "@/lib/activity-log";
 import { isActiveBrokerStatus } from "@/lib/deal-utils";
+import { runEmailWorkflowInBackground } from "@/lib/email-service";
+import { triggerRequirementMatchFoundForRequirement } from "@/lib/email-notifications";
 import { buildPaginationMeta, DEFAULT_PAGE_SIZE, normalizePageNumber, normalizePageSize } from "@/lib/pagination";
 import {
   enrichRequirementsWithSubmissionMeta,
@@ -401,6 +403,12 @@ export async function POST(request: NextRequest) {
     area,
     urgency,
   });
+
+  // Email trigger: find existing listings that match this new buyer requirement.
+  const requirementMatchEmailWorkflow = triggerRequirementMatchFoundForRequirement({ requirementId: data.id });
+  if (!runEmailWorkflowInBackground(requirementMatchEmailWorkflow, "requirement-created-match-email")) {
+    await requirementMatchEmailWorkflow;
+  }
 
   return NextResponse.json(
     {

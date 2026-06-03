@@ -10,6 +10,7 @@ import {
   withNoStore,
 } from "@/lib/deal-server";
 import { isActiveBrokerStatus } from "@/lib/deal-utils";
+import { triggerRequirementMatchFoundForSubmittedMatch } from "@/lib/email-notifications";
 import { isListingMatchingRequirement } from "@/lib/requirement-matching";
 import { fetchBrokerProfileByUserId, hydrateRequirementMatches } from "@/lib/requirements-server";
 import { hydrateListings } from "@/lib/platform-server-data";
@@ -220,6 +221,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       matchId: createdMatchId,
       message: message || null,
       status: "new",
+    });
+
+    // Email trigger: requirement owner receives the matched listing summary.
+    await triggerRequirementMatchFoundForSubmittedMatch({
+      requirementId: params.id,
+      listingId,
+      requirementMatchId: createdMatchId,
     });
 
     return NextResponse.json(

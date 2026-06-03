@@ -14,7 +14,7 @@ export const AREA_SELECT = "id, name, city, slug";
 export const COMING_SOON_REGISTRATION_SELECT =
   "id, first_name, last_name, email, whatsapp_number, instagram_handle, company_agency_name, role_id, role_name, created_at, updated_at";
 export const LISTING_SELECT =
-  "id, title, property_type, deal_type, bedrooms, size_sqft, area_id, developer, price, payment_plan, handover_date, yield_percent, property_video_url, notes, description, status, is_visible, created_at, updated_at, deleted_at, created_by, agency_id, renewal_due_at, approved_at, approval_notification_read_at, credits_used";
+  "id, title, property_type, deal_type, bedrooms, size_sqft, area_id, developer, price, payment_plan, handover_date, yield_percent, property_video_url, notes, description, status, is_visible, created_at, updated_at, deleted_at, created_by, agency_id, renewal_due_at, approved_at, approval_notification_read_at, last_new_deal_alert_sent_at, credits_used";
 export const LISTING_IMAGE_SELECT =
   "id, listing_id, file_name, storage_path, public_url, sort_order, is_cover, created_at";
 export const CHAT_MESSAGE_SELECT = "id, listing_id, sender_id, content, created_at, updated_at";
