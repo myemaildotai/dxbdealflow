@@ -228,7 +228,7 @@ function renderPrivateNetworkBadge() {
     <table class="private-badge" role="presentation" align="right" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-left:auto;">
       <tr>
         <td align="center" valign="middle" style="width:25px;padding:0 9px 0 0;color:#ffffff;text-align:center;font-size:0;line-height:0;vertical-align:middle;">
-          ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 20, className: "private-icon" })}
+          ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 25, className: "private-icon" })}
         </td>
         <td class="private-label" valign="middle" align="left" style="padding:0;color:#ffffff;${LABEL_TEXT_STYLE}font-size:11px;line-height:13px;text-align:left;text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;">
           PRIVATE NETWORK
@@ -240,16 +240,16 @@ function renderPrivateNetworkBadge() {
 }
 
 const BADGE_ICON_ASSET_PATHS = {
-  VIP: "/assets/vip.jpg",
-  OK: "/assets/ok.jpg",
-  REV: "/assets/rev.jpg",
-  SUB: "/assets/sub.jpg",
-  LIVE: "/assets/live.jpg",
+  VIP: "/assets/vip.png",
+  OK: "/assets/ok.png",
+  REV: "/assets/rev.png",
+  SUB: "/assets/sub.png",
+  LIVE: "/assets/live.png",
   NEW: "/assets/new.png",
   MSG: "/assets/msg.png",
-  MTCH: "/assets/match.jpg",
-  WEEK: "/assets/week.jpg",
-  PRO: "/assets/pro.jpg",
+  MTCH: "/assets/match.png",
+  WEEK: "/assets/week.png",
+  PRO: "/assets/pro.png",
   OTP: "/assets/otp.png",
   LEAD: "/assets/lead.png",
   REPLY: "/assets/reply.png",
@@ -279,7 +279,7 @@ function isBadgeIconName(iconName: string): iconName is BadgeIconName {
   return iconName in BADGE_ICON_ASSET_PATHS;
 }
 
-function getBadgeImageIcon(iconName: string, size = 26) {
+function getBadgeImageIcon(iconName: string, size = 40) {
   const resolvedIconName = isBadgeIconName(iconName) ? iconName : BADGE_ICON_FALLBACK;
   const altText = BADGE_ICON_ALT_TEXT[resolvedIconName];
 
@@ -292,7 +292,7 @@ function getBadgeImageIcon(iconName: string, size = 26) {
 }
 
 function renderBadgeIcon(label: string) {
-  return getBadgeImageIcon(label, 26);
+  return getBadgeImageIcon(label, 40);
 }
 
 function renderIconBadge(label: string) {
@@ -413,7 +413,7 @@ function renderFooterSocialIcons() {
     align: "right",
     borderColor: "#D7DDE8",
     containerSize: 30,
-    iconSize: 24,
+    iconSize: 35,
     imageClassName: "social-icon-image",
     linkClassName: "social-icon",
     spacing: 8,
@@ -424,7 +424,7 @@ function renderFooterSocialIcons() {
 function renderFooterInstagramBadge() {
   const iconUrl = buildEmailAssetUrl(SOCIAL_ICON_PATHS.instagram);
 
-  return `<img class="footer-instagram-icon" src="${escapeHtml(iconUrl)}" width="24" height="24" alt="Instagram" style="display:block;width:24px;height:24px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />`;
+  return `<img class="footer-instagram-icon" src="${escapeHtml(iconUrl)}" width="35" height="35" alt="Instagram" style="display:block;width:35px;height:35px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />`;
 }
 
 function renderFooter() {
@@ -440,7 +440,7 @@ function renderFooter() {
               <td class="footer-icon-cell" valign="middle" style="width:34px;padding:0 12px 0 0;text-align:left;">
                 <table role="presentation" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
                   <tr>
-                    <td align="center" valign="middle" style="width:24px;height:24px;border:1px solid #D7DDE8;border-radius:999px;background:#ffffff;text-align:center;vertical-align:middle;font-size:0;line-height:0;mso-line-height-rule:exactly;">
+                    <td align="center" valign="middle" style="width:35px;height:35px;text-align:center;vertical-align:middle;font-size:0;line-height:0;mso-line-height-rule:exactly;">
                       ${renderFooterInstagramBadge()}
                     </td>
                   </tr>
