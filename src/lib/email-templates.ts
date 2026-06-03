@@ -413,7 +413,7 @@ function renderFooterSocialIcons() {
     align: "right",
     borderColor: "#D7DDE8",
     containerSize: 30,
-    iconSize: 24,
+    iconSize: 35,
     imageClassName: "social-icon-image",
     linkClassName: "social-icon",
     spacing: 8,
@@ -424,7 +424,7 @@ function renderFooterSocialIcons() {
 function renderFooterInstagramBadge() {
   const iconUrl = buildEmailAssetUrl(SOCIAL_ICON_PATHS.instagram);
 
-  return `<img class="footer-instagram-icon" src="${escapeHtml(iconUrl)}" width="24" height="24" alt="Instagram" style="display:block;width:24px;height:24px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />`;
+  return `<img class="footer-instagram-icon" src="${escapeHtml(iconUrl)}" width="35" height="35" alt="Instagram" style="display:block;width:35px;height:35px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />`;
 }
 
 function renderFooter() {
@@ -440,7 +440,7 @@ function renderFooter() {
               <td class="footer-icon-cell" valign="middle" style="width:34px;padding:0 12px 0 0;text-align:left;">
                 <table role="presentation" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
                   <tr>
-                    <td align="center" valign="middle" style="width:24px;height:24px;border:1px solid #D7DDE8;border-radius:999px;background:#ffffff;text-align:center;vertical-align:middle;font-size:0;line-height:0;mso-line-height-rule:exactly;">
+                    <td align="center" valign="middle" style="width:35px;height:35px;text-align:center;vertical-align:middle;font-size:0;line-height:0;mso-line-height-rule:exactly;">
                       ${renderFooterInstagramBadge()}
                     </td>
                   </tr>
