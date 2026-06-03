@@ -4,7 +4,7 @@ type EnvironmentName = "production" | "preview" | "development";
 
 export const dynamic = "force-dynamic";
 
-const prefixSecret = (value?: string) => (value ? value.slice(0, 8) : "");
+const prefixSecret = (value?: string) => (value ? value.slice(0, 50) : "");
 
 const getEnvironment = (): EnvironmentName => {
   const vercelEnv = process.env.VERCEL_ENV;
