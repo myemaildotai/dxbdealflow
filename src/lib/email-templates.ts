@@ -228,7 +228,7 @@ function renderPrivateNetworkBadge() {
     <table class="private-badge" role="presentation" align="right" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-left:auto;">
       <tr>
         <td align="center" valign="middle" style="width:25px;padding:0 9px 0 0;color:#ffffff;text-align:center;font-size:0;line-height:0;vertical-align:middle;">
-          ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 20, className: "private-icon" })}
+          ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 25, className: "private-icon" })}
         </td>
         <td class="private-label" valign="middle" align="left" style="padding:0;color:#ffffff;${LABEL_TEXT_STYLE}font-size:11px;line-height:13px;text-align:left;text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;">
           PRIVATE NETWORK
@@ -279,7 +279,7 @@ function isBadgeIconName(iconName: string): iconName is BadgeIconName {
   return iconName in BADGE_ICON_ASSET_PATHS;
 }
 
-function getBadgeImageIcon(iconName: string, size = 26) {
+function getBadgeImageIcon(iconName: string, size = 40) {
   const resolvedIconName = isBadgeIconName(iconName) ? iconName : BADGE_ICON_FALLBACK;
   const altText = BADGE_ICON_ALT_TEXT[resolvedIconName];
 
@@ -292,7 +292,7 @@ function getBadgeImageIcon(iconName: string, size = 26) {
 }
 
 function renderBadgeIcon(label: string) {
-  return getBadgeImageIcon(label, 26);
+  return getBadgeImageIcon(label, 40);
 }
 
 function renderIconBadge(label: string) {
