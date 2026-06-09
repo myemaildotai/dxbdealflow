@@ -419,7 +419,7 @@ function renderFooterSocialIcons() {
     align: "right",
     borderColor: "#D7DDE8",
     containerSize: 30,
-    iconSize: 35,
+    iconSize: 22,
     imageClassName: "social-icon-image",
     linkClassName: "social-icon",
     spacing: 8,
