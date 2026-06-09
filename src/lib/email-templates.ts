@@ -233,8 +233,8 @@ function renderPrivateNetworkBadge() {
   return `
     <table class="private-badge" role="presentation" align="right" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-left:auto;">
       <tr>
-        <td align="center" valign="middle" style="width:25px;padding:0 9px 0 0;color:#ffffff;text-align:center;font-size:0;line-height:0;vertical-align:middle;">
-          ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 25, className: "private-icon" })}
+        <td align="center" valign="middle" style="width:25px;padding:0 4px 0 0;color:#ffffff;text-align:center;font-size:0;line-height:0;vertical-align:middle;">
+          ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 22, className: "private-icon" })}
         </td>
         <td class="private-label" valign="middle" align="left" style="padding:0;color:#ffffff;${LABEL_TEXT_STYLE}font-size:11px;line-height:13px;text-align:left;text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;">
           PRIVATE NETWORK
@@ -298,7 +298,7 @@ function getBadgeImageIcon(iconName: string, size = 40) {
 }
 
 function renderBadgeIcon(label: string) {
-  return getBadgeImageIcon(label, 40);
+  return getBadgeImageIcon(label, 34);
 }
 
 function renderIconBadge(label: string) {
@@ -393,7 +393,7 @@ function renderSocialIconCell(item: (typeof SOCIAL_ITEMS)[number], index: number
     <td class="${theme.linkClassName}-cell" align="center" valign="middle" style="${spacingStyle}text-align:center;vertical-align:middle;font-size:0;line-height:0;">
       <table role="presentation" width="${theme.containerSize}" height="${theme.containerSize}" cellspacing="0" cellpadding="0" border="0" style="width:${theme.containerSize}px;height:${theme.containerSize}px;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;">
         <tr>
-          <td align="center" valign="middle" width="${theme.containerSize}" height="${theme.containerSize}" style="width:${theme.containerSize}px;height:${theme.containerSize}px;padding:0;border:1px solid ${theme.borderColor};border-radius:999px;background:#ffffff;text-align:center;vertical-align:middle;font-size:0;line-height:0;mso-line-height-rule:exactly;">
+          <td align="center" valign="middle" width="${theme.containerSize}" height="${theme.containerSize}" style="width:${theme.containerSize}px;height:${theme.containerSize}px;padding:0;text-align:center;vertical-align:middle;font-size:0;line-height:0;mso-line-height-rule:exactly;">
             <a class="${theme.linkClassName}" href="${escapeHtml(item.href)}" aria-label="${escapeHtml(item.label)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;width:${theme.iconSize}px;height:${theme.iconSize}px;line-height:0;text-decoration:none;border:0;outline:none;">
               <img class="${theme.imageClassName}" src="${escapeHtml(iconUrl)}" width="${theme.iconSize}" height="${theme.iconSize}" alt="${escapeHtml(item.label)}" style="display:block;width:${theme.iconSize}px;height:${theme.iconSize}px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />
             </a>
@@ -430,7 +430,7 @@ function renderFooterSocialIcons() {
 function renderFooterInstagramBadge() {
   const iconUrl = buildEmailAssetUrl(SOCIAL_ICON_PATHS.instagram);
 
-  return `<img class="footer-instagram-icon" src="${escapeHtml(iconUrl)}" width="35" height="35" alt="Instagram" style="display:block;width:35px;height:35px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />`;
+  return `<img class="footer-instagram-icon" src="${escapeHtml(iconUrl)}" width="24" height="24" alt="Instagram" style="display:block;width:24px;height:24px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />`;
 }
 
 function renderFooter() {
