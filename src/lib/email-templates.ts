@@ -59,7 +59,7 @@ const LOGO_PATH = "/assets/Logo-White.png";
 const WELCOME_HERO_PATH = "/assets/coming-soon.png";
 const LOCK_ICON_PATH = "/assets/lock.png";
 const WELCOME_INSTAGRAM_ICON_PATH = "/assets/insta-gold.png";
-const EMAIL_ASSET_FALLBACK_BASE_URL = "https://www.dxbdealflow.com";
+const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 const SOCIAL_HANDLE = "@dxbdealflow";
 const BODY_FONT_STACK = "'Inter', Arial, Helvetica, sans-serif";
 const DISPLAY_FONT_STACK = "'Poppins', 'Inter', Arial, Helvetica, sans-serif";
@@ -141,7 +141,7 @@ function toAbsoluteUrl(value: string | null | undefined) {
   }
 
   if (trimmedValue.startsWith("/")) {
-    const baseUrl = getEmailBaseUrl();
+    const baseUrl = normalizeBaseUrl(BASE_URL);
 
     if (!baseUrl) {
       return null;
@@ -153,15 +153,21 @@ function toAbsoluteUrl(value: string | null | undefined) {
   return null;
 }
 
-function buildEmailAssetUrl(path: string) {
-  const absoluteUrl = toAbsoluteUrl(path);
+export function buildEmailAssetUrl(path: string) {
+  const trimmedPath = path.trim();
 
-  if (absoluteUrl) {
-    return absoluteUrl;
+  if (/^https?:\/\//i.test(trimmedPath)) {
+    return trimmedPath;
   }
 
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${EMAIL_ASSET_FALLBACK_BASE_URL}${normalizedPath}`;
+  const normalizedPath = trimmedPath.startsWith("/") ? trimmedPath : `/${trimmedPath}`;
+  const baseUrl = normalizeBaseUrl(BASE_URL);
+
+  if (!baseUrl) {
+    return normalizedPath;
+  }
+
+  return `${baseUrl}${normalizedPath}`;
 }
 
 function escapeHtml(value: string | number | null | undefined) {
@@ -214,7 +220,7 @@ function renderEmailImageIcon(params: { path: string; altText: string; size: num
 }
 
 function renderLogo() {
-  const logoUrl = toAbsoluteUrl(LOGO_PATH);
+  const logoUrl = buildEmailAssetUrl(LOGO_PATH);
 
   if (!logoUrl) {
     return `<span class="brand-logo-text" style="color:#ffffff;${HEADING_TEXT_STYLE}font-size:18px;letter-spacing:0.04em;line-height:24px;">${BRAND_NAME}</span>`;
@@ -981,7 +987,7 @@ const WELCOME_BORDER = "#E8E2D5";
 const WELCOME_CREAM = "#FBF7EF";
 
 function renderWelcomeHeaderLogo(overviewUrl: string) {
-  const logoUrl = toAbsoluteUrl(LOGO_PATH);
+  const logoUrl = buildEmailAssetUrl(LOGO_PATH);
   const logoHtml = logoUrl
     ? `<img class="welcome-logo" src="${escapeHtml(logoUrl)}" width="146" alt="${BRAND_NAME}" style="display:block;width:146px;max-width:146px;height:auto;border:0;outline:none;text-decoration:none;" />`
     : `<span class="welcome-logo-text" style="display:block;color:#ffffff;${HEADING_TEXT_STYLE}font-size:20px;line-height:24px;letter-spacing:0.04em;">${BRAND_NAME}</span>`;
@@ -1154,7 +1160,7 @@ function renderWelcomeTrustedLogoCell(params: { html: string; width: number; isF
 }
 
 function renderWelcomeEarlyInterestHtml(options: { overviewUrl: string; preheader: string }) {
-  const heroUrl = toAbsoluteUrl(WELCOME_HERO_PATH);
+  const heroUrl = buildEmailAssetUrl(WELCOME_HERO_PATH);
   const heroBackgroundAttribute = heroUrl ? ` background="${escapeHtml(heroUrl)}"` : "";
   const heroBackgroundStyle = heroUrl
     ? `background:${WELCOME_CREAM} url('${escapeHtml(heroUrl)}') center center / cover no-repeat;background-image:url('${escapeHtml(heroUrl)}');background-size:cover;background-position:center center;background-repeat:no-repeat;`
