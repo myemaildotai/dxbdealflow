@@ -20,6 +20,7 @@ import {
   getNewDealAlertCooldownState,
 } from "@/lib/email-alert-config";
 import {
+  buildEmailAssetUrl,
   brokerEmailVerificationOtpTemplate,
   brokerPublicEnquiryNotificationTemplate,
   brokerVerificationSuccessTemplate,
@@ -143,10 +144,10 @@ function getRequirementMatchesUrl(requirementId: string) {
 
 function getListingImageUrl(listing: Listing | null | undefined) {
   if (!listing) {
-    return buildAppUrl(FALLBACK_LISTING_IMAGE_PATH);
+    return buildEmailAssetUrl(FALLBACK_LISTING_IMAGE_PATH);
   }
 
-  return getCoverImage(listing) || buildAppUrl(FALLBACK_LISTING_IMAGE_PATH);
+  return getCoverImage(listing) || buildEmailAssetUrl(FALLBACK_LISTING_IMAGE_PATH);
 }
 
 function getInstagramStoryImageUrl(listing: Listing | null | undefined) {
