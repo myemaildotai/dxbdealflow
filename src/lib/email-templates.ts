@@ -233,7 +233,7 @@ function renderPrivateNetworkBadge() {
   return `
     <table class="private-badge" role="presentation" align="right" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin-left:auto;">
       <tr>
-        <td align="center" valign="middle" style="width:25px;padding:0 4px 0 0;color:#ffffff;text-align:center;font-size:0;line-height:0;vertical-align:middle;">
+        <td align="center" valign="middle" style="width:20px;padding:0 7px 0 0;color:#ffffff;text-align:center;font-size:0;line-height:0;vertical-align:middle;">
           ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 22, className: "private-icon" })}
         </td>
         <td class="private-label" valign="middle" align="left" style="padding:0;color:#ffffff;${LABEL_TEXT_STYLE}font-size:11px;line-height:13px;text-align:left;text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;">
@@ -1003,7 +1003,7 @@ function renderWelcomeLockBadge() {
           <table role="presentation" width="28" height="28" cellspacing="0" cellpadding="0" style="width:28px;height:28px;border-collapse:collapse;">
             <tr>
               <td align="center" valign="middle" style="width:28px;height:28px;text-align:center;vertical-align:middle;font-size:0;line-height:0;">
-                ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 24, className: "welcome-private-icon" })}
+                ${renderEmailImageIcon({ path: LOCK_ICON_PATH, altText: "Private network", size: 22, className: "welcome-private-icon" })}
               </td>
             </tr>
           </table>
