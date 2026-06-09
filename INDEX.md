@@ -1,4 +1,4 @@
-# Deal Exchange Platform - Complete MVP Implementation  
+# Deal Exchange Platform - Complete MVP Implementation   
 
 ## 📋 Start Here
 
