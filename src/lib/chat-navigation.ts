@@ -1,6 +1,6 @@
 import { apiFetchCached, getApiCacheKey, prefetchApi } from "@/lib/deal-api";
 import { getSessionResource } from "@/lib/session-resource";
-import type { BrokerListingDetail, ChatConversationSummary, Requirement } from "@/lib/deal-types";
+import type { BrokerChatNavigationSummary, BrokerListingDetail, ChatConversationSummary, Requirement } from "@/lib/deal-types";
 
 export type BrokerChatBootstrapResponse = {
   conversationId: string | null;
@@ -25,7 +25,7 @@ export type BrokerChatContext = {
 };
 
 type BrokerChatNavigationOptions = {
-  chatGroups?: ChatConversationSummary[] | null;
+  chatGroups?: BrokerChatNavigationSummary[] | null;
   context?: BrokerChatContext;
   prefetchRoute?: (href: string) => void;
 };
@@ -73,7 +73,7 @@ function buildBrokerChatHref(listingId: string, conversationId: string | null, c
 
 function findConversationIdForListing(
   listingId: string,
-  groups?: ChatConversationSummary[] | null
+  groups?: BrokerChatNavigationSummary[] | null
 ) {
   return groups?.find((group) => group.listing.id === listingId)?.conversations[0]?.conversationId || null;
 }
@@ -89,7 +89,7 @@ function getCachedBootstrapConversationId(listingId: string) {
 
 function getCachedConversationId(
   listingId: string,
-  groups?: ChatConversationSummary[] | null
+  groups?: BrokerChatNavigationSummary[] | null
 ) {
   const conversationIdFromGroups = findConversationIdForListing(listingId, groups);
   if (conversationIdFromGroups) {
@@ -107,7 +107,7 @@ function getCachedConversationId(
 export function getImmediateBrokerChatHref(
   listingId: string,
   context?: BrokerChatContext,
-  chatGroups?: ChatConversationSummary[] | null
+  chatGroups?: BrokerChatNavigationSummary[] | null
 ) {
   const cachedConversationId = getCachedConversationId(listingId, chatGroups);
 
@@ -195,7 +195,7 @@ export async function resolveBrokerChatHref(
   listingId: string,
   context?: BrokerChatContext,
   options: {
-    chatGroups?: ChatConversationSummary[] | null;
+    chatGroups?: BrokerChatNavigationSummary[] | null;
   } = {}
 ) {
   const cachedConversationId = getCachedConversationId(listingId, options.chatGroups);

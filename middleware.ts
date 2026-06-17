@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getLegacyAdminTabRedirectPath } from "./src/lib/admin-routes";
 import { isLegalRoute } from "./src/lib/legal-routes";
 
 const ACCESS_TOKEN_COOKIE = "dx-access-token";
@@ -48,6 +49,12 @@ const BROKER_PROTECTED_PATHS = new Set(["/my-requirements", "/post-listing", "/p
 type SiteModeState = {
   maintenanceEnabled: boolean;
   comingSoonEnabled: boolean;
+};
+
+type SiteModeLookup = {
+  value: SiteModeState;
+  cacheStatus: "hit" | "miss" | "coalesced";
+  durationMs: number;
 };
 
 type UserAccess = {
@@ -180,64 +187,56 @@ function resolveSupabaseSettingsKey() {
   return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || null;
 }
 
-async function loadSiteModeState(): Promise<SiteModeState> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = resolveSupabaseSettingsKey();
+async function loadSiteModeState(request: NextRequest): Promise<SiteModeState> {
   const fallback = {
     maintenanceEnabled: false,
     comingSoonEnabled: false,
   };
-
-  if (!supabaseUrl || !supabaseKey) {
-    return fallback;
-  }
+  const siteModeUrl = request.nextUrl.clone();
+  siteModeUrl.pathname = "/api/public/site-modes";
+  siteModeUrl.search = "";
 
   try {
-    const response = await fetch(
-      `${supabaseUrl}/rest/v1/settings?key=in.(maintenance_mode,coming_soon_mode)&select=key,value`,
-      {
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-          Accept: "application/json",
-        },
-        cache: "no-store",
-      }
-    );
+    const response = await fetch(siteModeUrl, {
+      headers: {
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
 
     if (!response.ok) {
       return fallback;
     }
 
-    const payload = (await response.json().catch(() => [])) as Array<{
-      key?: string;
-      value?: { enabled?: boolean } | null;
-    }>;
-    const nextState = { ...fallback };
+    const payload = (await response.json().catch(() => null)) as {
+      maintenance?: { enabled?: boolean };
+      comingSoon?: { enabled?: boolean };
+    } | null;
 
-    payload.forEach((row) => {
-      if (row.key === "maintenance_mode") {
-        nextState.maintenanceEnabled = !!row.value?.enabled;
-      }
-
-      if (row.key === "coming_soon_mode") {
-        nextState.comingSoonEnabled = !!row.value?.enabled;
-      }
-    });
-
-    return nextState;
+    return {
+      maintenanceEnabled: !!payload?.maintenance?.enabled,
+      comingSoonEnabled: !!payload?.comingSoon?.enabled,
+    };
   } catch {
     return fallback;
   }
 }
 
-async function getSiteModeState() {
+async function getSiteModeState(request: NextRequest): Promise<SiteModeLookup> {
+  const startedAt = performance.now();
+
   if (siteModeStateCache && siteModeStateCache.expiresAt > Date.now()) {
-    return siteModeStateCache.value;
+    return {
+      value: siteModeStateCache.value,
+      cacheStatus: "hit",
+      durationMs: performance.now() - startedAt,
+    };
   }
 
+  const cacheStatus = siteModeStatePromise ? "coalesced" : "miss";
+
   if (!siteModeStatePromise) {
-    const request = loadSiteModeState()
+    const pendingRequest = loadSiteModeState(request)
       .then((value) => {
         siteModeStateCache = {
           value,
@@ -247,15 +246,31 @@ async function getSiteModeState() {
         return value;
       })
       .finally(() => {
-        if (siteModeStatePromise === request) {
+        if (siteModeStatePromise === pendingRequest) {
           siteModeStatePromise = null;
         }
       });
 
-    siteModeStatePromise = request;
+    siteModeStatePromise = pendingRequest;
   }
 
-  return siteModeStatePromise;
+  return {
+    value: await siteModeStatePromise,
+    cacheStatus,
+    durationMs: performance.now() - startedAt,
+  };
+}
+
+function withMiddlewareTiming(response: NextResponse, middlewareStartedAt: number, siteModeLookup: SiteModeLookup) {
+  const middlewareDurationMs = performance.now() - middlewareStartedAt;
+  const existingTiming = response.headers.get("Server-Timing");
+  const middlewareTiming = [
+    `site_mode;dur=${siteModeLookup.durationMs.toFixed(1)};desc="${siteModeLookup.cacheStatus}"`,
+    `middleware;dur=${middlewareDurationMs.toFixed(1)}`,
+  ].join(", ");
+
+  response.headers.set("Server-Timing", existingTiming ? `${existingTiming}, ${middlewareTiming}` : middlewareTiming);
+  return response;
 }
 
 function redirectToPath(request: NextRequest, pathname: string) {
@@ -414,6 +429,26 @@ function redirectToCanonicalRoute(request: NextRequest) {
   return redirectWithNoStore(redirectUrl);
 }
 
+function redirectLegacyAdminTabRoute(request: NextRequest) {
+  if (!request.nextUrl.searchParams.has("tab")) {
+    return null;
+  }
+
+  const redirectPath = getLegacyAdminTabRedirectPath(
+    request.nextUrl.pathname,
+    request.nextUrl.searchParams.get("tab") || ""
+  );
+
+  if (!redirectPath) {
+    return null;
+  }
+
+  const redirectUrl = request.nextUrl.clone();
+  redirectUrl.pathname = redirectPath;
+  redirectUrl.searchParams.delete("tab");
+  return redirectWithNoStore(redirectUrl);
+}
+
 function redirectToAdminLogin(request: NextRequest) {
   const redirectUrl = buildRedirect(request, ADMIN_SIGN_IN_PATH);
   redirectUrl.searchParams.set("adminOnly", "1");
@@ -425,10 +460,16 @@ function redirectToComingSoon(request: NextRequest) {
 }
 
 export async function middleware(request: NextRequest) {
+  const middlewareStartedAt = performance.now();
   const pathname = request.nextUrl.pathname;
 
   if (isStaticAsset(pathname)) {
     return NextResponse.next();
+  }
+
+  const legacyAdminTabRedirect = redirectLegacyAdminTabRoute(request);
+  if (legacyAdminTabRedirect) {
+    return legacyAdminTabRedirect;
   }
 
   const canonicalRouteRedirect = redirectToCanonicalRoute(request);
@@ -453,83 +494,91 @@ export async function middleware(request: NextRequest) {
   }
 
   try {
-    const { maintenanceEnabled, comingSoonEnabled } = await getSiteModeState();
+    const siteModeLookup = await getSiteModeState(request);
+    const { maintenanceEnabled, comingSoonEnabled } = siteModeLookup.value;
+    const respond = (response: NextResponse) => withMiddlewareTiming(response, middlewareStartedAt, siteModeLookup);
 
     if (maintenanceEnabled) {
       if (pathname === ADMIN_SIGN_IN_PATH && !isAdminSignInRequest(request)) {
-        return redirectToAdminLogin(request);
+        return respond(redirectToAdminLogin(request));
       }
 
       if (canAccessDuringMaintenance(request)) {
-        return NextResponse.next();
+        return respond(NextResponse.next());
       }
 
       if (await isAdminRequest(request)) {
-        return NextResponse.next();
+        return respond(NextResponse.next());
       }
 
       if (pathname.startsWith("/api")) {
-        return NextResponse.json(
-          {
-            error: "Maintenance mode is enabled. Only admin access is currently available.",
-          },
-          { status: 503 }
+        return respond(
+          NextResponse.json(
+            {
+              error: "Maintenance mode is enabled. Only admin access is currently available.",
+            },
+            { status: 503 }
+          )
         );
       }
 
-      return redirectWithNoStore(buildRedirect(request, "/maintenance"));
+      return respond(redirectWithNoStore(buildRedirect(request, "/maintenance")));
     }
 
     if (pathname === "/maintenance") {
-      return comingSoonEnabled ? redirectToComingSoon(request) : redirectToHome(request);
+      return respond(comingSoonEnabled ? redirectToComingSoon(request) : redirectToHome(request));
     }
 
     if (!comingSoonEnabled) {
       if (pathname === COMING_SOON_PAGE_PATH) {
-        return redirectToHome(request);
+        return respond(redirectToHome(request));
       }
 
-      return NextResponse.next();
+      return respond(NextResponse.next());
     }
 
     if (pathname === ADMIN_SIGN_IN_PATH && !isAdminSignInRequest(request)) {
-      return redirectToAdminLogin(request);
+      return respond(redirectToAdminLogin(request));
     }
 
     if (isAdminRoute(pathname) || isAdminApiRoute(pathname)) {
       const role = await getRequestRole(request);
 
       if (role === "admin") {
-        return NextResponse.next();
+        return respond(NextResponse.next());
       }
 
       if (isAdminApiRoute(pathname)) {
-        return NextResponse.json({ error: "Admin access required while coming soon mode is enabled." }, { status: 403 });
+        return respond(
+          NextResponse.json({ error: "Admin access required while coming soon mode is enabled." }, { status: 403 })
+        );
       }
 
       // Anonymous visitors can reach the admin sign-in page; authenticated
       // non-admin users are still blocked by the Coming Soon gate.
-      return role ? redirectToComingSoon(request) : redirectToAdminLogin(request);
+      return respond(role ? redirectToComingSoon(request) : redirectToAdminLogin(request));
     }
 
     if (canAccessDuringComingSoon(request)) {
-      return NextResponse.next();
+      return respond(NextResponse.next());
     }
 
     if ((await isAdminRequest(request)) && canAdminAccessDuringComingSoon(pathname)) {
-      return NextResponse.next();
+      return respond(NextResponse.next());
     }
 
     if (pathname.startsWith("/api")) {
-      return NextResponse.json(
-        {
-          error: "Coming soon mode is enabled. Public access is temporarily limited.",
-        },
-        { status: 503 }
+      return respond(
+        NextResponse.json(
+          {
+            error: "Coming soon mode is enabled. Public access is temporarily limited.",
+          },
+          { status: 503 }
+        )
       );
     }
 
-    return redirectToComingSoon(request);
+    return respond(redirectToComingSoon(request));
   } catch {
     return NextResponse.next();
   }

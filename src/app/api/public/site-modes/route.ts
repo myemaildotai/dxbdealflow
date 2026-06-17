@@ -1,36 +1,48 @@
 import { NextResponse } from "next/server";
-import { getServiceSupabase, withNoStore } from "@/lib/deal-server";
-import { getSiteModeState } from "@/lib/site-mode-state";
+import { withNoStore } from "@/lib/deal-server";
+import { getSharedSiteModeState } from "@/lib/site-mode-state";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  try {
-    const supabase = getServiceSupabase();
-    const state = await getSiteModeState(supabase);
+function withSiteModeTiming(response: NextResponse, startedAt: number) {
+  response.headers.set("Server-Timing", `site_mode_shared;dur=${(performance.now() - startedAt).toFixed(1)}`);
+  return response;
+}
 
-    return NextResponse.json(
-      {
-        maintenance: {
-          enabled: state.maintenance.enabled,
+export async function GET() {
+  const startedAt = performance.now();
+
+  try {
+    const state = await getSharedSiteModeState();
+
+    return withSiteModeTiming(
+      NextResponse.json(
+        {
+          maintenance: {
+            enabled: state.maintenance.enabled,
+          },
+          comingSoon: {
+            enabled: state.comingSoon.enabled,
+          },
         },
-        comingSoon: {
-          enabled: state.comingSoon.enabled,
-        },
-      },
-      withNoStore()
+        withNoStore()
+      ),
+      startedAt
     );
   } catch {
-    return NextResponse.json(
-      {
-        maintenance: {
-          enabled: false,
+    return withSiteModeTiming(
+      NextResponse.json(
+        {
+          maintenance: {
+            enabled: false,
+          },
+          comingSoon: {
+            enabled: false,
+          },
         },
-        comingSoon: {
-          enabled: false,
-        },
-      },
-      withNoStore()
+        withNoStore()
+      ),
+      startedAt
     );
   }
 }

@@ -9,10 +9,10 @@ import { ListingSubmittedSuccessModal } from "@/components/ListingSubmittedSucce
 import { ListingMediaLinks } from "@/components/ListingMediaLinks";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { useAuth } from "@/auth/useAuth";
-import { apiFetch } from "@/lib/deal-api";
+import { apiFetch, apiFetchCached } from "@/lib/deal-api";
 import { invalidateListingCaches } from "@/lib/client-cache";
 import { cn, formatDealType, formatPropertyType } from "@/lib/deal-utils";
-import { Area, Listing, ListingDocument, ListingFormValues, ListingImage, PublicOverview } from "@/lib/deal-types";
+import { Area, Listing, ListingDocument, ListingFormValues, ListingImage } from "@/lib/deal-types";
 import {
   LISTING_DOCUMENT_ACCEPT,
   LISTING_DOCUMENT_MAX_SIZE_LABEL,
@@ -768,15 +768,15 @@ function PostListingPageContent() {
       const controller = new AbortController();
 
       Promise.all([
-        apiFetch<PublicOverview>("/api/public/overview", { signal: controller.signal }),
+        apiFetchCached<{ areas: Area[] }>("/api/public/areas", {}, { ttlMs: 300_000 }),
         editId ? apiFetch<ListingDetailResponse>(`/api/listings/${editId}`, { signal: controller.signal }) : Promise.resolve(null),
       ])
-        .then(([overview, detail]) => {
+        .then(([areasPayload, detail]) => {
           if (controller.signal.aborted) {
             return;
           }
 
-          setAreas(overview.areas || []);
+          setAreas(areasPayload.areas || []);
           if (detail?.listing) {
             if (!detail.listing.can_edit) throw new Error("You can only edit your own listings.");
             setValues({
@@ -1110,7 +1110,7 @@ function PostListingPageContent() {
 
   const handleGoToListings = () => {
     setSuccessModalOpen(false);
-    router.push("/dashboard?section=listings");
+    router.push("/dashboard/listings");
   };
 
   const handleBackToWorkspace = () => {
@@ -1164,7 +1164,7 @@ function PostListingPageContent() {
       }
       invalidateListingCaches(listingId || undefined);
       if (editId) {
-        router.push("/dashboard?section=listings");
+        router.push("/dashboard/listings");
       } else {
         setSuccessModalOpen(true);
       }
@@ -1322,7 +1322,7 @@ function PostListingPageContent() {
           progress={progress}
           backAction={
             <BackButton
-              fallbackHref="/dashboard?section=listings"
+              fallbackHref="/dashboard/listings"
               aria-label="Back to Listings"
               className={cn(
                 "inline-flex min-h-[52px] w-full items-center justify-center gap-2 rounded-[16px] border border-[#e6ebf2] bg-white px-4 py-3 text-sm font-semibold text-brand-navy shadow-[0_12px_26px_rgba(15,42,95,0.05)] transition hover:border-[#d7deea] hover:bg-[#fbfcfe] sm:w-auto"

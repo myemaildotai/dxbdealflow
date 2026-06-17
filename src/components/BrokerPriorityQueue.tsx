@@ -1,14 +1,18 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type UIEvent } from "react";
 import { useLazyNotificationList } from "@/hooks/useLazyNotificationList";
 import { type BrokerNotificationFeedItem } from "@/lib/broker-notifications";
 import { cn, formatDate } from "@/lib/deal-utils";
 
 type BrokerPriorityQueueProps = {
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
   notifications: BrokerNotificationFeedItem[];
+  onLoadMore?: () => Promise<void> | void;
   onMarkAsRead: (notification: BrokerNotificationFeedItem) => Promise<void>;
   onOpenPrimaryAction: (notification: BrokerNotificationFeedItem) => Promise<void>;
+  totalCount?: number;
 };
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -41,57 +45,13 @@ function formatRelativeTime(value?: string | null) {
 }
 
 export function getBrokerNotificationSentence(notification: BrokerNotificationFeedItem) {
-  if (notification.type === "listingApproval") {
-    return `Your listing ‘${notification.listing.title}’ has been approved by the admin team.`;
-  }
-
-  if (notification.type === "chat") {
-    const listingTitle = notification.listing.title || notification.subject || "your listing";
-    const unreadCount = Math.max(notification.conversation.unreadCount || 0, notification.conversation.hasUnread ? 1 : 0);
-    return unreadCount > 1
-      ? `You have ${unreadCount} unread messages from ${notification.senderName} for ${listingTitle}.`
-      : `You received a message from ${notification.senderName} for ${listingTitle}.`;
-  }
-
-  if (notification.type === "enquiry") {
-    const listingTitle = notification.lead.listing?.title || notification.subject;
-
-    if (listingTitle && listingTitle !== "General enquiry") {
-      return `You received an enquiry from ${notification.senderName} for ${listingTitle}.`;
-    }
-
-    return `You received an enquiry from ${notification.senderName}.`;
-  }
-
-  return `You received a requirement match from ${notification.senderName} for ${notification.subject}.`;
+  return notification.ariaLabel;
 }
 
 export function splitBrokerNotificationText(notification: BrokerNotificationFeedItem) {
-  if (notification.type === "listingApproval") {
-    return {
-      title: `Listing ‘${notification.listing.title}’`,
-      subtitle: "has been approved.",
-    };
-  }
-
-  if (notification.type === "chat") {
-    const unreadCount = Math.max(notification.conversation.unreadCount || 0, notification.conversation.hasUnread ? 1 : 0);
-    return {
-      title: unreadCount > 1 ? `${unreadCount} unread messages from ${notification.senderName}` : `New message from ${notification.senderName}`,
-      subtitle: `Regarding ${notification.listing.title || notification.subject || "your listing"}.`,
-    };
-  }
-
-  if (notification.type === "enquiry") {
-    return {
-      title: `New enquiry from ${notification.senderName}`,
-      subtitle: `for ${notification.lead.listing?.title || notification.subject || "your listing"}.`,
-    };
-  }
-
   return {
-    title: `Requirement match from ${notification.senderName}`,
-    subtitle: `for ${notification.subject}.`,
+    title: notification.title,
+    subtitle: notification.message,
   };
 }
 
@@ -164,21 +124,42 @@ export function getBrokerNotificationVisual(notification: BrokerNotificationFeed
 }
 
 export function BrokerPriorityQueue({
+  hasMore = false,
+  isLoadingMore: externalIsLoadingMore = false,
   notifications,
+  onLoadMore,
   onMarkAsRead,
   onOpenPrimaryAction,
+  totalCount = notifications.length,
 }: BrokerPriorityQueueProps) {
   const [markingIds, setMarkingIds] = useState<string[]>([]);
   const [activeNotificationId, setActiveNotificationId] = useState<string | null>(null);
   const interactionLockRef = useRef(false);
   const orderedNotifications = useMemo(() => sortBrokerNotifications(notifications), [notifications]);
   const {
-    handleScroll: handleNotificationListScroll,
-    isLoadingMore,
-    visibleItems: visibleNotifications,
+    handleScroll: handleLazyNotificationListScroll,
+    isLoadingMore: lazyIsLoadingMore,
+    visibleItems: lazyVisibleNotifications,
   } = useLazyNotificationList({
     items: orderedNotifications,
   });
+  const isLoadingMore = onLoadMore ? externalIsLoadingMore : lazyIsLoadingMore;
+  const visibleNotifications = onLoadMore ? orderedNotifications : lazyVisibleNotifications;
+  const handleNotificationListScroll = useCallback(
+    (event: UIEvent<HTMLElement>) => {
+      if (!onLoadMore) {
+        handleLazyNotificationListScroll(event);
+        return;
+      }
+
+      const target = event.currentTarget;
+      const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+      if (hasMore && !externalIsLoadingMore && distanceFromBottom <= 96) {
+        void onLoadMore();
+      }
+    },
+    [externalIsLoadingMore, handleLazyNotificationListScroll, hasMore, onLoadMore]
+  );
 
   const handleNotificationRead = async (notification: BrokerNotificationFeedItem) => {
     if (notification.isRead || markingIds.includes(notification.id)) return;
@@ -242,7 +223,7 @@ export function BrokerPriorityQueue({
               />
             </svg>
             <span className="text-[27px] font-extrabold leading-none tracking-[-0.04em] text-[#20283a]">
-              {notifications.length}
+              {totalCount}
             </span>
           </div>
         </div>

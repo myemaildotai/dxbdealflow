@@ -2,7 +2,7 @@
 
 import { REQUIREMENT_PROPERTY_TYPES, REQUIREMENT_URGENCY_OPTIONS, REQUIREMENT_BEDROOM_OPTIONS } from "@/lib/requirements";
 import { formatPropertyType, formatRequirementUrgency } from "@/lib/deal-utils";
-import { CloseIcon, FilterIcon, SearchIcon, SortIcon } from "./BuyerBoardIcons";
+import { CloseIcon, FilterIcon, SortIcon } from "./BuyerBoardIcons";
 import { BUYER_BOARD_SORT_OPTIONS, type BuyerBoardFilterState } from "./buyer-board-utils";
 
 type BuyerBoardFiltersProps = {
@@ -81,7 +81,6 @@ export function BuyerBoardFilters({
               <span className={labelClassName}>Search</span>
               <div className="relative">
                 <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center text-brand-slate">
-                  <SearchIcon className="h-4 w-4" />
                 </span>
                 <input
                   type="search"

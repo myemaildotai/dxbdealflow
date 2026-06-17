@@ -11,7 +11,7 @@ import { ListingMediaLinks } from "@/components/ListingMediaLinks";
 import { ListingMasonryGallery } from "@/components/ListingMasonryGallery";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { useAuth } from "@/auth/useAuth";
-import { apiFetch } from "@/lib/deal-api";
+import { apiFetchCached } from "@/lib/deal-api";
 import type { BrokerListingDetail } from "@/lib/deal-types";
 import {
   cn,
@@ -27,6 +27,7 @@ import {
   statusClasses,
 } from "@/lib/deal-utils";
 import { canAccessBrokerWorkspace, getDefaultRouteForUser } from "@/lib/route-access";
+import { getSessionResourceGeneration } from "@/lib/session-resource";
 
 const RESPONSIVE_SUBTLE_COMPACT_CLASS =
   "min-w-0 max-w-full border-t border-brand-line/80 bg-transparent px-0 py-4 text-brand-ink shadow-none xl:rounded-[8px] xl:border xl:border-brand-line/80 xl:bg-brand-panel-soft xl:p-4 xl:shadow-[0_8px_24px_rgba(15,42,95,0.05)]";
@@ -34,6 +35,7 @@ const RESPONSIVE_SUBTLE_ROOMY_CLASS =
   "min-w-0 max-w-full border-t border-brand-line/80 bg-transparent px-0 py-4 text-brand-ink shadow-none xl:rounded-[8px] xl:border xl:border-brand-line/80 xl:bg-brand-panel-soft xl:p-5 xl:shadow-[0_8px_24px_rgba(15,42,95,0.05)]";
 const COMPACT_OVERLAY_BADGE_CLASS =
   "px-2 py-1 text-[9px] tracking-[0.12em] xl:px-3 xl:py-1.5 xl:text-[11px] xl:tracking-[0.18em]";
+const LISTING_DETAIL_CACHE_TTL_MS = 5_000;
 
 function SectionHeader({
   kicker,
@@ -414,21 +416,46 @@ export default function BrokerListingDetailPage() {
 
   const loadDetail = useCallback(async () => {
     if (!listingId) return;
-    const payload = await apiFetch<BrokerListingDetail>(`/api/dashboard/listings/${listingId}`);
+    const payload = await apiFetchCached<BrokerListingDetail>(
+      `/api/dashboard/listings/${listingId}`,
+      {},
+      { ttlMs: LISTING_DETAIL_CACHE_TTL_MS }
+    );
     setDetail(payload);
   }, [listingId]);
 
   useEffect(() => {
+    let isActive = true;
+
     if (!loading && (!user || !canAccessBrokerWorkspace(user))) {
       router.replace(getDefaultRouteForUser(user));
-      return;
+      return () => {
+        isActive = false;
+      };
     }
 
     if (!loading && user && listingId) {
+      const requestGeneration = getSessionResourceGeneration();
+      const isCurrentRequest = () => isActive && requestGeneration === getSessionResourceGeneration();
+
       loadDetail()
-        .catch((error) => enqueueSnackbar(error instanceof Error ? error.message : "Failed to load listing detail.", { variant: "error" }))
-        .finally(() => setPageLoading(false));
+        .catch((error) => {
+          if (!isCurrentRequest()) {
+            return;
+          }
+
+          enqueueSnackbar(error instanceof Error ? error.message : "Failed to load listing detail.", { variant: "error" });
+        })
+        .finally(() => {
+          if (isCurrentRequest()) {
+            setPageLoading(false);
+          }
+        });
     }
+
+    return () => {
+      isActive = false;
+    };
   }, [enqueueSnackbar, listingId, loadDetail, loading, router, user]);
 
   if (loading || pageLoading || !user) {
@@ -441,7 +468,7 @@ export default function BrokerListingDetailPage() {
     return (
       <AppShell title="Listing Detail" subtitle="Review the full listing payload inside the broker workspace." hidePageHeader>
         <div className="pt-6">
-          <BackButton fallbackHref="/dashboard?section=listings" className="btn-secondary inline-flex">
+          <BackButton fallbackHref="/dashboard/listings" className="btn-secondary inline-flex">
             Back to Dashboard
           </BackButton>
           <div className="mt-6">
@@ -494,7 +521,7 @@ export default function BrokerListingDetailPage() {
   return (
     <AppShell mainClassName="!max-w-[1540px] xl:!px-10">
       <div className="flex min-w-0 items-center justify-between gap-3">
-        <BackButton fallbackHref="/dashboard?section=listings" className="btn-secondary min-w-0 shrink">
+        <BackButton fallbackHref="/dashboard/listings" className="btn-secondary min-w-0 shrink">
           <span className="truncate">Back to Dashboard</span>
         </BackButton>
         {listing.can_edit ? (

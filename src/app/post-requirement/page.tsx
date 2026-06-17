@@ -11,7 +11,7 @@ import { useAuth } from "@/auth/useAuth";
 import { apiFetch } from "@/lib/deal-api";
 import { invalidateRequirementCaches } from "@/lib/client-cache";
 import { cn, formatDealType, formatPropertyType, formatRequirementUrgency } from "@/lib/deal-utils";
-import { getRequirementMatchSummary, type RequirementListingMatchSummary } from "@/lib/requirement-matching";
+import type { RequirementListingMatchSummary } from "@/lib/requirement-matching";
 import { canAccessBrokerWorkspace, getDefaultRouteForUser } from "@/lib/route-access";
 import {
   formatRequirementBedrooms,
@@ -21,24 +21,27 @@ import {
   REQUIREMENT_PROPERTY_TYPES,
   REQUIREMENT_URGENCY_OPTIONS,
 } from "@/lib/requirements";
-import type { Listing, Requirement, RequirementFormValues } from "@/lib/deal-types";
+import type { Requirement, RequirementFormValues } from "@/lib/deal-types";
 
-type RequirementsResponse = {
+type RequirementFormResponse = {
   areas: string[];
+  brokerProfileId: string;
+  brokerStatus: string | null;
+  requirement: Requirement | null;
 };
 
-type RequirementDetailResponse = {
-  requirement: Requirement;
-};
-
-type ListingsResponse = {
-  listings: Listing[];
+type RequirementMatchPreviewResponse = {
+  matchCount: number;
+  bestScore: number;
+  totalListingsConsidered: number;
+  topListingIds: string[];
 };
 
 type RequirementFieldKey = keyof RequirementFormValues;
 type RequirementErrors = Partial<Record<RequirementFieldKey, string>>;
 type RequirementTouched = Partial<Record<RequirementFieldKey, boolean>>;
 type RequirementSuccessKind = "created" | "updated";
+type RequirementPreviewBudgetValues = Pick<RequirementFormValues, "budgetMin" | "budgetMax">;
 type MatchInsightTone = {
   label: string;
   note: string;
@@ -442,17 +445,35 @@ function PostRequirementPageContent() {
   const { user, loading } = useAuth();
   const editId = resolvedSearchParams.get("id");
   const isEditMode = Boolean(editId);
+  const userId = user?.uid ?? null;
+  const canUseBrokerWorkspace = canAccessBrokerWorkspace(user);
   const submitInFlightRef = useRef(false);
+  const matchPreviewRequestIdRef = useRef(0);
 
   const [areas, setAreas] = useState<string[]>([]);
-  const [listingPool, setListingPool] = useState<Listing[]>([]);
-  const [listingInsightsUnavailable, setListingInsightsUnavailable] = useState(false);
+  const [matchPreviewSummary, setMatchPreviewSummary] = useState<RequirementListingMatchSummary>(EMPTY_MATCH_SUMMARY);
+  const [matchPreviewLoading, setMatchPreviewLoading] = useState(false);
+  const [matchPreviewHasLoaded, setMatchPreviewHasLoaded] = useState(false);
+  const [matchPreviewUnavailable, setMatchPreviewUnavailable] = useState(false);
+  const [matchPreviewError, setMatchPreviewError] = useState<string | null>(null);
   const [values, setValues] = useState<RequirementFormValues>(initialValues);
+  const [committedMatchPreviewBudget, setCommittedMatchPreviewBudget] = useState<RequirementPreviewBudgetValues>({
+    budgetMin: initialValues.budgetMin,
+    budgetMax: initialValues.budgetMax,
+  });
   const [touched, setTouched] = useState<RequirementTouched>({});
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [successKind, setSuccessKind] = useState<RequirementSuccessKind | null>(null);
+  const formPath = useMemo(() => {
+    const params = new URLSearchParams();
+    if (editId) params.set("id", editId);
+    const queryString = params.toString();
+    return queryString ? `/api/requirements/form?${queryString}` : "/api/requirements/form";
+  }, [editId]);
+  const committedBudgetMin = committedMatchPreviewBudget.budgetMin;
+  const committedBudgetMax = committedMatchPreviewBudget.budgetMax;
 
   useEffect(() => {
     document.body.classList.add("post-listing-page");
@@ -460,92 +481,158 @@ function PostRequirementPageContent() {
   }, []);
 
   useEffect(() => {
-    if (!loading && !canAccessBrokerWorkspace(user)) {
+    if (!loading && !canUseBrokerWorkspace) {
       router.replace(getDefaultRouteForUser(user));
+    }
+  }, [canUseBrokerWorkspace, loading, router, user]);
+
+  useEffect(() => {
+    if (loading || !userId || !canUseBrokerWorkspace) {
       return;
     }
 
-    if (!loading && user) {
-      const controller = new AbortController();
+    const controller = new AbortController();
 
-      Promise.all([
-        apiFetch<RequirementsResponse>("/api/requirements?page=1&pageSize=1000", { signal: controller.signal }),
-        editId ? apiFetch<RequirementDetailResponse>(`/api/requirements/${editId}`, { signal: controller.signal }) : Promise.resolve(null),
-        apiFetch<ListingsResponse>("/api/listings?page=1&pageSize=1000", { signal: controller.signal })
-          .then((payload) => ({ payload, failed: false }))
-          .catch(() => ({ payload: { listings: [] as Listing[] }, failed: true })),
-      ])
-        .then(([payload, detail, listingResponse]) => {
-          if (controller.signal.aborted) {
-            return;
-          }
+    setPageLoading(true);
 
-          setAreas(normalizeAreaValues(payload.areas));
-          setListingPool(listingResponse.payload.listings || []);
-          setListingInsightsUnavailable(listingResponse.failed);
-          if (detail?.requirement) {
-            setValues({
-              title: detail.requirement.title || "",
-              description: detail.requirement.description,
-              propertyType: detail.requirement.property_type,
-              dealType: detail.requirement.deal_type,
-              bedrooms: parseRequirementBedroomOption(detail.requirement.bedrooms) || "",
-              budgetMin: detail.requirement.budget_min?.toString() || "",
-              budgetMax: detail.requirement.budget_max?.toString() || "",
-              area: detail.requirement.area || "",
-              urgency: detail.requirement.urgency,
-              timeline: detail.requirement.timeline || "",
-            });
-          }
-        })
-        .catch((error) => {
-          if (controller.signal.aborted) {
-            return;
-          }
+    apiFetch<RequirementFormResponse>(formPath, { signal: controller.signal })
+      .then((payload) => {
+        if (controller.signal.aborted) {
+          return;
+        }
 
-          enqueueSnackbar(error instanceof Error ? error.message : "Failed to prepare form.", { variant: "error" });
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) {
-            setPageLoading(false);
-          }
+        const nextValues: RequirementFormValues = payload.requirement
+          ? {
+              title: payload.requirement.title || "",
+              description: payload.requirement.description,
+              propertyType: payload.requirement.property_type,
+              dealType: payload.requirement.deal_type,
+              bedrooms: parseRequirementBedroomOption(payload.requirement.bedrooms) || "",
+              budgetMin: payload.requirement.budget_min?.toString() || "",
+              budgetMax: payload.requirement.budget_max?.toString() || "",
+              area: payload.requirement.area || "",
+              urgency: payload.requirement.urgency,
+              timeline: payload.requirement.timeline || "",
+            }
+          : initialValues;
+
+        setAreas(normalizeAreaValues(payload.areas));
+        setValues(nextValues);
+        setCommittedMatchPreviewBudget({
+          budgetMin: nextValues.budgetMin,
+          budgetMax: nextValues.budgetMax,
         });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
 
-      return () => controller.abort();
-    }
-  }, [editId, enqueueSnackbar, loading, router, user]);
+        enqueueSnackbar(error instanceof Error ? error.message : "Failed to prepare form.", { variant: "error" });
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setPageLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [canUseBrokerWorkspace, enqueueSnackbar, formPath, loading, userId]);
 
   const pageTitle = useMemo(() => (isEditMode ? "Edit Buyer Requirement" : "Post Buyer Requirement"), [isEditMode]);
   const submitLabel = submitting ? "Saving..." : isEditMode ? "Update Requirement" : "Post Requirement";
   const errors = useMemo(() => validateForm(values), [values]);
   const areaOptions = useMemo(() => areas, [areas]);
   const urgencyTone = useMemo(() => getUrgencyTone(values.urgency), [values.urgency]);
-  const liveMatchRequirement = useMemo(
-    () => ({
-      area: hasValue(values.area) ? values.area.trim() : null,
-      area_id: null,
-      bedrooms: hasValue(values.bedrooms) ? values.bedrooms : null,
-      budget_min: isPositiveNumber(values.budgetMin) ? Number(values.budgetMin) : null,
-      budget_max: isPositiveNumber(values.budgetMax) ? Number(values.budgetMax) : null,
-    }),
-    [values.area, values.bedrooms, values.budgetMax, values.budgetMin]
+  const matchPreviewPath = useMemo(
+    () => {
+      const params = new URLSearchParams();
+      if (hasValue(values.area)) params.set("area", values.area.trim());
+      if (hasValue(values.bedrooms)) params.set("bedrooms", values.bedrooms.trim());
+      if (isPositiveNumber(committedBudgetMin)) params.set("budgetMin", committedBudgetMin);
+      if (isPositiveNumber(committedBudgetMax)) params.set("budgetMax", committedBudgetMax);
+      const queryString = params.toString();
+      return queryString ? `/api/requirements/match-preview?${queryString}` : "/api/requirements/match-preview";
+    },
+    [committedBudgetMax, committedBudgetMin, values.area, values.bedrooms]
   );
-  const liveMatchSummary = useMemo(
-    () => (listingInsightsUnavailable ? EMPTY_MATCH_SUMMARY : getRequirementMatchSummary(liveMatchRequirement, listingPool)),
-    [listingInsightsUnavailable, listingPool, liveMatchRequirement]
+  const hasMatchPreviewInputs = useMemo(
+    () => hasValue(values.area) || hasValue(values.bedrooms) || isPositiveNumber(committedBudgetMin) || isPositiveNumber(committedBudgetMax),
+    [committedBudgetMax, committedBudgetMin, values.area, values.bedrooms]
   );
+  const liveMatchSummary = matchPreviewSummary;
   const liveMatchPercentage = useMemo(
     () => liveMatchSummary.bestMatchPercentage,
     [liveMatchSummary.bestMatchPercentage]
   );
   const matchInsightTone = useMemo(
-    () => getMatchInsightTone(liveMatchSummary.matchedListingsCount, liveMatchPercentage, listingInsightsUnavailable),
-    [listingInsightsUnavailable, liveMatchPercentage, liveMatchSummary.matchedListingsCount]
+    () => getMatchInsightTone(liveMatchSummary.matchedListingsCount, liveMatchPercentage, matchPreviewUnavailable),
+    [matchPreviewUnavailable, liveMatchPercentage, liveMatchSummary.matchedListingsCount]
   );
   const matchingListingsLabel = useMemo(
     () => getMatchingListingsLabel(liveMatchSummary.matchedListingsCount),
     [liveMatchSummary.matchedListingsCount]
   );
+
+  useEffect(() => {
+    if (loading || pageLoading || !userId || !canUseBrokerWorkspace) {
+      return;
+    }
+
+    const requestId = matchPreviewRequestIdRef.current + 1;
+    matchPreviewRequestIdRef.current = requestId;
+
+    if (!hasMatchPreviewInputs) {
+      setMatchPreviewSummary(EMPTY_MATCH_SUMMARY);
+      setMatchPreviewLoading(false);
+      setMatchPreviewHasLoaded(false);
+      setMatchPreviewUnavailable(false);
+      setMatchPreviewError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      setMatchPreviewLoading(true);
+      setMatchPreviewUnavailable(false);
+      setMatchPreviewError(null);
+
+      apiFetch<RequirementMatchPreviewResponse>(matchPreviewPath, { signal: controller.signal })
+        .then((payload) => {
+          if (controller.signal.aborted || matchPreviewRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          setMatchPreviewSummary({
+            bestMatchPercentage: payload.bestScore,
+            matchedListingsCount: payload.matchCount,
+            totalListingsConsidered: payload.totalListingsConsidered,
+          });
+          setMatchPreviewHasLoaded(true);
+          setMatchPreviewUnavailable(false);
+          setMatchPreviewError(null);
+        })
+        .catch((error) => {
+          if (controller.signal.aborted || matchPreviewRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          setMatchPreviewUnavailable(true);
+          setMatchPreviewError(error instanceof Error ? error.message : "Unable to refresh live matches.");
+        })
+        .finally(() => {
+          if (!controller.signal.aborted && matchPreviewRequestIdRef.current === requestId) {
+            setMatchPreviewLoading(false);
+          }
+        });
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [canUseBrokerWorkspace, hasMatchPreviewInputs, loading, matchPreviewPath, pageLoading, userId]);
+
   const previewTitle = useMemo(() => {
     if (hasValue(values.title)) return values.title.trim();
     if (hasValue(values.area)) return `Requirement in ${values.area.trim()}`;
@@ -574,6 +661,18 @@ function PostRequirementPageContent() {
     setTouched((current) => ({ ...current, [field]: true }));
   };
 
+  const commitBudgetMatchPreviewValue = (field: keyof RequirementPreviewBudgetValues) => {
+    const nextValue = values[field];
+    setCommittedMatchPreviewBudget((current) => (
+      current[field] === nextValue ? current : { ...current, [field]: nextValue }
+    ));
+  };
+
+  const handleBudgetBlur = (field: keyof RequirementPreviewBudgetValues) => {
+    handleBlur(field);
+    commitBudgetMatchPreviewValue(field);
+  };
+
   const handleNumberChange = (field: "budgetMin" | "budgetMax") => (event: ChangeEvent<HTMLInputElement>) => {
     const nextValue = sanitizeNumberInput(event.target.value);
     if (nextValue !== null) updateField(field, nextValue);
@@ -592,7 +691,7 @@ function PostRequirementPageContent() {
 
   const closeSuccessModalToRequirements = () => {
     setSuccessKind(null);
-    router.push("/dashboard?section=requirements");
+    router.push("/dashboard/requirements");
   };
 
   const handleBackToDashboardFromSuccess = () => {
@@ -664,7 +763,7 @@ function PostRequirementPageContent() {
       <div className="space-y-5 pb-10 sm:space-y-6">
         <div className="hidden items-center gap-3 sm:flex">
           <BackButton
-            fallbackHref="/dashboard?section=requirements"
+            fallbackHref="/dashboard/requirements"
             aria-label="Back to Requirements"
             className={cn(
               "inline-flex items-center justify-center border border-brand-line bg-white text-brand-navy shadow-[0_10px_24px_rgba(15,42,95,0.05)] transition",
@@ -814,7 +913,7 @@ function PostRequirementPageContent() {
                       id="budgetMin-field"
                       className={inputClass(Boolean(visibleError("budgetMin")))}
                       value={values.budgetMin}
-                      onBlur={() => handleBlur("budgetMin")}
+                      onBlur={() => handleBudgetBlur("budgetMin")}
                       onChange={handleNumberChange("budgetMin")}
                       placeholder="2500000"
                       inputMode="decimal"
@@ -827,7 +926,7 @@ function PostRequirementPageContent() {
                       id="budgetMax-field"
                       className={inputClass(Boolean(visibleError("budgetMax")))}
                       value={values.budgetMax}
-                      onBlur={() => handleBlur("budgetMax")}
+                      onBlur={() => handleBudgetBlur("budgetMax")}
                       onChange={handleNumberChange("budgetMax")}
                       placeholder="4000000"
                       inputMode="decimal"
@@ -885,9 +984,13 @@ function PostRequirementPageContent() {
               <p className="text-[12px] font-semibold uppercase tracking-[0.32em] text-brand-slate">Live Preview</p>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                   <div className="min-w-0 flex-1">
-                    <p className="mt-1 text-2xl font-semibold tracking-[-0.04em] text-brand-ink sm:text-[30px]">
-                      {matchingListingsLabel}
-                    </p>
+                    {matchPreviewLoading && !matchPreviewHasLoaded ? (
+                      <div className="mt-2 h-9 w-44 max-w-full animate-pulse rounded-md bg-[#e8edf4]" aria-label="Loading live matches" />
+                    ) : (
+                      <p className="mt-1 text-2xl font-semibold tracking-[-0.04em] text-brand-ink sm:text-[30px]">
+                        {matchingListingsLabel}
+                      </p>
+                    )}
                     <div className={cn(
                       "mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[13px] font-semibold",
                       matchInsightTone.chipClassName
@@ -895,12 +998,21 @@ function PostRequirementPageContent() {
                       <MatchInsightIcon />
                       <span>{matchInsightTone.label}</span>
                     </div>
+                    {matchPreviewLoading && matchPreviewHasLoaded ? (
+                      <p className="mt-2 text-sm leading-5 text-brand-slate">Refreshing live matches...</p>
+                    ) : matchPreviewError ? (
+                      <p className="mt-2 text-sm font-medium leading-5 text-[#c65345]">{matchPreviewError}</p>
+                    ) : null}
                   </div>
-                  <ScoreRing
-                    score={liveMatchPercentage}
-                    ringColor={matchInsightTone.ringColor}
-                    ariaLabel={`Best listing match score ${liveMatchPercentage}%`}
-                  />
+                  {matchPreviewLoading && !matchPreviewHasLoaded ? (
+                    <div className="h-[84px] w-[84px] shrink-0 animate-pulse rounded-full bg-[#e8edf4] sm:h-[96px] sm:w-[96px]" aria-label="Loading best match score" />
+                  ) : (
+                    <ScoreRing
+                      score={liveMatchPercentage}
+                      ringColor={matchInsightTone.ringColor}
+                      ariaLabel={`Best listing match score ${liveMatchPercentage}%`}
+                    />
+                  )}
                 </div>
 
               <div className="mt-4 rounded-[18px] border border-[#e6ebf2] bg-white px-3 py-4 shadow-[0_12px_26px_rgba(15,23,42,0.05)] sm:mt-5 sm:rounded-[24px] sm:px-5 sm:py-5">

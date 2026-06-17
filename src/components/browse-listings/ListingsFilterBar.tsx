@@ -880,7 +880,7 @@ export function ListingsFilterBar({
   );
 
   return (
-    <div ref={rootRef} className="relative z-40 overflow-visible">
+    <div ref={rootRef} className="relative z-20 overflow-visible">
       <div className="overflow-visible rounded-[18px] border border-[#e6ebf2] bg-white/92 p-3 shadow-[0_14px_34px_rgba(15,42,95,0.08)] backdrop-blur-[14px] lg:hidden">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           {renderSearchControl("Search listings")}

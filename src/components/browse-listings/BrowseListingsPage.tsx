@@ -13,7 +13,7 @@ import {
 import { SkeletonBlock } from "@/components/SkeletonBlock";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
-import { apiFetch, prefetchApi } from "@/lib/deal-api";
+import { apiFetch } from "@/lib/deal-api";
 import { PropertyType } from "@/lib/deal-types";
 import { formatCurrency, formatPropertyType } from "@/lib/deal-utils";
 import { buildPaginationMeta, type PaginationMeta } from "@/lib/pagination";
@@ -1003,12 +1003,10 @@ export function BrowseListingsPage() {
   const showSkeletonState = loading && response === null;
   const showInlineRefreshState = loading && response !== null;
   const opportunitiesInViewCount = resolvedResponse.summary.totalCount;
-
-  useEffect(() => {
-    visibleListings.slice(0, 6).forEach((item) => {
-      prefetchApi(`/api/listings/${item.listing.id}`, {}, { ttlMs: 60_000 });
-    });
-  }, [visibleListings]);
+  const currentListingsHref = useMemo(
+    () => (searchParamsKey ? `${pathname}?${searchParamsKey}` : pathname),
+    [pathname, searchParamsKey],
+  );
 
   const syncBrowseRoute = useCallback(
     (
@@ -1255,7 +1253,7 @@ export function BrowseListingsPage() {
             onTabChange={handleTabChange}
           />
 
-          {topDeal ? <TopDealCard item={topDeal} /> : null}
+          {topDeal ? <TopDealCard item={topDeal} listingReturnHref={currentListingsHref} /> : null}
 
           <ListingsFilterBar
             areas={areas}
@@ -1346,6 +1344,7 @@ export function BrowseListingsPage() {
                     key={item.listing.id}
                     item={item}
                     isBestDeal={bestDealIds.has(item.listing.id)}
+                    listingReturnHref={currentListingsHref}
                   />
                 ))}
               </div>

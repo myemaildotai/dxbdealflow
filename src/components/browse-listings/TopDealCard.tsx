@@ -2,6 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { prefetchApi } from "@/lib/deal-api";
+import { createListingDetailHref } from "@/lib/listing-navigation";
 import { formatCurrency, formatNumber } from "@/lib/deal-utils";
 import {
   ListingIntel,
@@ -266,8 +268,19 @@ function getMetaTokens(item: ListingIntel) {
   ].filter(Boolean) as string[];
 }
 
-export function TopDealCard({ item }: { item: ListingIntel }) {
+export function TopDealCard({
+  item,
+  listingReturnHref,
+}: {
+  item: ListingIntel;
+  listingReturnHref?: string;
+}) {
   const listing = item.listing;
+  const detailHref = createListingDetailHref(listing.id, listingReturnHref);
+  const detailApiPath = `/api/listings/${listing.id}`;
+  const prefetchDetail = () => {
+    prefetchApi(detailApiPath, {}, { ttlMs: 60_000 });
+  };
   const listingTitle = listing.title.trim() || "Untitled Listing";
   const coverImage = getCoverImage(listing);
   const heroTag = getHeroTagLabel(item);
@@ -488,7 +501,10 @@ export function TopDealCard({ item }: { item: ListingIntel }) {
 
             <div className="flex w-full sm:w-auto sm:justify-end">
               <Link
-                href={`/listings/${listing.id}`}
+                href={detailHref}
+                onFocus={prefetchDetail}
+                onMouseEnter={prefetchDetail}
+                onPointerDown={prefetchDetail}
                 className="inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-[10px] bg-[linear-gradient(135deg,#e4c25a_0%,#cfa437_55%,#b88915_100%)] px-4 py-2 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(201,160,47,0.28)] transition duration-200 hover:brightness-105 sm:w-auto lg:min-h-[44px] lg:rounded-[12px] lg:px-8 lg:py-3 lg:text-[20px]"
               >
                 View Deal

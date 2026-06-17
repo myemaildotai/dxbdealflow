@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   getRequestUser,
+  getRequestAccessToken,
+  getRequestRefreshToken,
   getServiceSupabase,
   jsonError,
   LISTING_SELECT,
@@ -48,6 +50,82 @@ type ListingConversationRow = {
 type LegacyChatMessageRow = {
   sender_id: string;
 };
+
+type ListingDetailBundle = {
+  agency: Listing["agency"];
+  area: Listing["area"];
+  brokers_engaged_count: number | string | null;
+  commission_terms: Listing["commission_terms"];
+  enquiry_count: number | string | null;
+  listing: Listing;
+  listing_documents: ListingDocument[];
+  listing_images: Listing["listing_images"];
+  owner: Listing["owner"];
+  owner_active_listings_count: number | string | null;
+  public_broker: Listing["public_broker"];
+};
+
+type RequestTimings = Map<string, number>;
+let listingDetailBundleRpcAvailable: boolean | null = null;
+
+async function measure<T>(
+  timings: RequestTimings,
+  name: string,
+  operation: () => PromiseLike<T>,
+) {
+  const startedAt = performance.now();
+
+  try {
+    return await operation();
+  } finally {
+    timings.set(name, performance.now() - startedAt);
+  }
+}
+
+function recordTiming(
+  timings: RequestTimings,
+  name: string,
+  startedAt: number,
+) {
+  timings.set(name, performance.now() - startedAt);
+}
+
+function buildServerTimingHeader(timings: RequestTimings) {
+  return Array.from(timings.entries())
+    .map(([name, duration]) => `${name};dur=${duration.toFixed(1)}`)
+    .join(", ");
+}
+
+function normalizeCount(value: number | string | null | undefined) {
+  const count = Number(value || 0);
+  return Number.isFinite(count) ? count : 0;
+}
+
+async function fetchListingDetailBundle(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  listingId: string,
+  includeInternal: boolean,
+) {
+  if (listingDetailBundleRpcAvailable === false) {
+    return { available: false, bundle: null as ListingDetailBundle | null };
+  }
+
+  const { data, error } = await supabase.rpc("get_listing_detail_bundle", {
+    p_include_internal: includeInternal,
+    p_listing_id: listingId,
+  });
+
+  if (error) {
+    listingDetailBundleRpcAvailable = false;
+    return { available: false, bundle: null as ListingDetailBundle | null };
+  }
+
+  listingDetailBundleRpcAvailable = true;
+  return {
+    available: true,
+    bundle: (data as ListingDetailBundle | null) || null,
+  };
+}
 
 async function fetchListingEngagementMetrics(
   supabase: ReturnType<typeof getServiceSupabase>,
@@ -562,10 +640,37 @@ async function reorderListingImages(
 }
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+  const requestStartedAt = performance.now();
+  const timings: RequestTimings = new Map();
   const supabase = getServiceSupabase();
-  const viewer = await getRequestUser(request);
+  const hasAuthCredentials = Boolean(
+    getRequestAccessToken(request) || getRequestRefreshToken(request),
+  );
+  const shouldLoadFallbackListing = listingDetailBundleRpcAvailable !== true;
+  const fallbackListingPromise =
+    !shouldLoadFallbackListing
+      ? Promise.resolve({ data: null as Listing | null })
+      : measure(timings, "listing", () =>
+          supabase.from("listings").select(LISTING_SELECT).eq("id", params.id).maybeSingle(),
+        );
+  const [viewer, detailBundleResult, fallbackListingResult] = await Promise.all([
+    measure(timings, "auth", () => getRequestUser(request)),
+    measure(timings, "detail_bundle", () =>
+      fetchListingDetailBundle(supabase, params.id, hasAuthCredentials),
+    ),
+    fallbackListingPromise,
+  ]);
+  let listingRow =
+    detailBundleResult.bundle?.listing ||
+    (fallbackListingResult.data as Listing | null) ||
+    null;
 
-  const { data: listingRow } = await supabase.from("listings").select(LISTING_SELECT).eq("id", params.id).maybeSingle();
+  if (!detailBundleResult.available && !listingRow && !shouldLoadFallbackListing) {
+    const fallbackResult = await measure(timings, "listing_fallback", () =>
+      supabase.from("listings").select(LISTING_SELECT).eq("id", params.id).maybeSingle(),
+    );
+    listingRow = (fallbackResult.data as Listing | null) || null;
+  }
 
   if (!listingRow || listingRow.deleted_at) {
     return jsonError("Listing not found.", 404);
@@ -581,51 +686,108 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 
   const canViewDocuments = !!viewer && (isOwner || isAdmin);
-  let listing: Listing;
-  let documentsResult: { data: ListingDocument[] | null; error: { message?: string } | null };
-  let engagementMetrics: Awaited<ReturnType<typeof fetchListingEngagementMetrics>>;
+  let listing: Listing = listingRow;
+  let documents: ListingDocument[] = [];
+  let engagementMetrics = {
+    enquiryCount: 0,
+    brokersEngagedCount: 0,
+  };
   let publicBroker: Listing["public_broker"] = null;
 
-  try {
-    const [hydratedListings, loadedDocumentsResult, loadedEngagementMetrics, brokerSummaries] = await Promise.all([
-      hydrateListings(supabase, [listingRow as Listing], {
-        includeAgencies: canSeeInternal,
-        includeCommissionTerms: canSeeInternal,
-        includeOwnerActiveCount: canSeeInternal,
-        includeOwners: canSeeInternal,
-      }),
-      canViewDocuments
-        ? supabase
+  if (detailBundleResult.available && detailBundleResult.bundle) {
+    const bundle = detailBundleResult.bundle;
+    listing = {
+      ...listingRow,
+      area: bundle.area || null,
+      owner: bundle.owner || null,
+      agency: bundle.agency || null,
+      commission_terms: bundle.commission_terms || null,
+      listing_images: bundle.listing_images || [],
+      owner_active_listings_count: normalizeCount(bundle.owner_active_listings_count),
+    };
+    engagementMetrics = {
+      enquiryCount: normalizeCount(bundle.enquiry_count),
+      brokersEngagedCount: normalizeCount(bundle.brokers_engaged_count),
+    };
+    publicBroker = bundle.public_broker || null;
+
+    if (canViewDocuments) {
+      const documentsResult = await measure(timings, "documents", () =>
+        supabase
+          .from("listing_documents")
+          .select("id, listing_id, file_name, storage_path, public_url")
+          .eq("listing_id", params.id),
+      );
+
+      if (documentsResult.error) {
+        return jsonError(documentsResult.error.message || "Failed to load listing documents.", 500);
+      }
+
+      documents = (documentsResult.data as ListingDocument[] | null) || [];
+    }
+  } else {
+    try {
+      const [hydratedListings, loadedDocumentsResult, loadedEngagementMetrics, brokerSummaries] = await Promise.all([
+        measure(timings, "hydration", () =>
+          hydrateListings(supabase, [listingRow as Listing], {
+            includeAgencies: canSeeInternal,
+            includeCommissionTerms: canSeeInternal,
+            includeOwnerActiveCount: canSeeInternal,
+            includeOwners: canSeeInternal,
+          }),
+        ),
+        measure(timings, "documents", async () => {
+          if (!canViewDocuments) {
+            return { data: [] as ListingDocument[] | null, error: null };
+          }
+
+          const result = await supabase
             .from("listing_documents")
             .select("id, listing_id, file_name, storage_path, public_url")
-            .eq("listing_id", params.id)
-        : Promise.resolve({ data: [] as ListingDocument[] | null, error: null }),
-      fetchListingEngagementMetrics(supabase, params.id, listingRow.created_by),
-      fetchChatUserSummaries(supabase, [listingRow.created_by]),
-    ]);
+            .eq("listing_id", params.id);
 
-    listing = hydratedListings[0];
-    documentsResult = loadedDocumentsResult as { data: ListingDocument[] | null; error: { message?: string } | null };
-    engagementMetrics = loadedEngagementMetrics;
-    const brokerSummary = brokerSummaries[0];
-    publicBroker =
-      brokerSummary || listing.owner
-        ? {
-            first_name: brokerSummary?.first_name ?? listing.owner?.first_name ?? null,
-            last_name: brokerSummary?.last_name ?? listing.owner?.last_name ?? null,
-            profile_photo: brokerSummary?.profile_photo ?? null,
-          }
-        : null;
-  } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Failed to load listing detail.", 500);
+          return {
+            data: (result.data as ListingDocument[] | null) || [],
+            error: result.error,
+          };
+        }),
+        measure(timings, "engagement", () =>
+          fetchListingEngagementMetrics(supabase, params.id, listingRow.created_by),
+        ),
+        measure(timings, "public_broker", () =>
+          fetchChatUserSummaries(supabase, [listingRow.created_by]),
+        ),
+      ]);
+
+      listing = hydratedListings[0];
+      const documentsResult = loadedDocumentsResult as {
+        data: ListingDocument[] | null;
+        error: { message?: string } | null;
+      };
+
+      if (documentsResult.error) {
+        return jsonError(documentsResult.error.message || "Failed to load listing documents.", 500);
+      }
+
+      documents = documentsResult.data || [];
+      engagementMetrics = loadedEngagementMetrics;
+      const brokerSummary = brokerSummaries[0];
+      publicBroker =
+        brokerSummary || listing.owner
+          ? {
+              first_name: brokerSummary?.first_name ?? listing.owner?.first_name ?? null,
+              last_name: brokerSummary?.last_name ?? listing.owner?.last_name ?? null,
+              profile_photo: brokerSummary?.profile_photo ?? null,
+            }
+          : null;
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : "Failed to load listing detail.", 500);
+    }
   }
   const viewerCanChat = !!viewer && viewer.role === "broker" && isActiveBrokerStatus(viewer.status) && viewer.id !== listing.created_by;
 
-  if (documentsResult.error) {
-    return jsonError(documentsResult.error.message || "Failed to load listing documents.", 500);
-  }
-
-  return NextResponse.json({
+  const responseBuildStartedAt = performance.now();
+  const response = NextResponse.json({
     listing: {
       ...listing,
       can_edit: isOwner,
@@ -633,13 +795,17 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       enquiry_count: engagementMetrics.enquiryCount,
       brokers_engaged_count: engagementMetrics.brokersEngagedCount,
       commission_terms: canSeeInternal ? listing.commission_terms : null,
-      listing_documents: (documentsResult.data as ListingDocument[] | null) || [],
+      listing_documents: canViewDocuments ? documents : [],
       public_broker: publicBroker,
       owner: canSeeInternal ? listing.owner : null,
       agency: canSeeInternal ? listing.agency : null,
       owner_active_listings_count: canSeeInternal ? listing.owner_active_listings_count : null,
     },
   });
+  recordTiming(timings, "response_build", responseBuildStartedAt);
+  recordTiming(timings, "total", requestStartedAt);
+  response.headers.set("Server-Timing", buildServerTimingHeader(timings));
+  return response;
 }
 
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {

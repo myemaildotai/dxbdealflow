@@ -39,7 +39,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       is_read: true,
       read_at: new Date().toISOString(),
     })
-    .eq("id", params.id);
+    .eq("id", params.id)
+    .eq("to_user_id", auth.user.id);
 
   if (error) {
     return jsonError(error.message || "Failed to update enquiry.", 400);

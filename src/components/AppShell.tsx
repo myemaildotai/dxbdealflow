@@ -53,11 +53,11 @@ export function AppShell({
     });
 
     if (accountUser?.role === "broker") {
-      prefetchApi("/api/dashboard?scope=notifications", {}, { ttlMs: 45_000 });
+      prefetchApi("/api/dashboard/notifications", {}, { ttlMs: 45_000 });
     }
 
     if (accountUser?.role === "admin") {
-      prefetchApi("/api/admin/overview?scope=notifications", {}, { ttlMs: 45_000 });
+      prefetchApi("/api/admin/notifications", {}, { ttlMs: 45_000 });
     }
   }, [accountUser?.role, navItems, router]);
 

@@ -1,17 +1,16 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useSnackbar } from "notistack";
 import { AccountNotificationBell } from "@/components/AccountNotificationBell";
 import { BrokerAvatar } from "@/components/BrokerAvatar";
+import { IntentPrefetchLink as Link } from "@/components/IntentPrefetchLink";
 import { useAuth } from "@/auth/useAuth";
 import { authOperations } from "@/auth/authOperations";
 import { resetClientSessionState } from "@/lib/client-session";
 import { cn, getFullName } from "@/lib/deal-utils";
-import { prefetchApi } from "@/lib/deal-api";
 import { getHeaderNavItems } from "@/lib/header-nav";
 import { getPostSignOutRoute } from "@/lib/public-maintenance";
 import { canAccessBrokerWorkspace, canShowAuthenticatedHeader } from "@/lib/route-access";
@@ -40,28 +39,10 @@ export function PublicHeader({
   const showMobileMenuToggle = !hidePublicNav || !!accountUser;
   const mobileMenuId = "public-header-mobile-menu";
   const showBrokerOnlineIndicator = canAccessBrokerWorkspace(accountUser);
-  const shouldPrefetchListings = resolvedPathname === "/listings" || resolvedPathname.startsWith("/listings/") || navItems.some((item) => item.href === "/listings");
-  const shouldPrefetchGuestRoutes = !accountUser && !hidePublicNav;
 
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [accountUser?.uid, pathname]);
-
-  useEffect(() => {
-    if (shouldPrefetchListings) {
-      router.prefetch("/listings");
-      prefetchApi("/api/listings?page=1&pageSize=12", {}, { ttlMs: 45_000 });
-    }
-
-    if (shouldPrefetchGuestRoutes) {
-      router.prefetch("/register");
-      router.prefetch("/login");
-    }
-
-    navItems.forEach((item) => {
-      router.prefetch(item.href);
-    });
-  }, [navItems, router, shouldPrefetchGuestRoutes, shouldPrefetchListings]);
 
   const handleSignOut = async () => {
     const previousUser = user;

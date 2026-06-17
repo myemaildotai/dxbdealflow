@@ -10,6 +10,8 @@
     "start": "next start",
     "start:port": "next start -p ${FRONTEND_PORT:-3000}",
     "lint": "next lint",
+    "index:codebase": "node ./scripts/generate-codebase-index.mjs",
+    "index:check": "node -e \"const fs=require('node:fs');const p='.agents/codebase-index.md';if(!fs.existsSync(p)||!fs.readFileSync(p,'utf8').trim()){console.error(p+' is missing or empty');process.exit(1)}console.log(p+' exists and is not empty')\"",
     "setup": "cd .. && npm run setup"
   },
   "dependencies": {

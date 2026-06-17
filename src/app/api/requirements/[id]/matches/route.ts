@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logActivity } from "@/lib/activity-log";
 import {
-  getRequestUser,
+  getRequestUserWithBrokerProfileId,
   getServiceSupabase,
   jsonError,
-  LISTING_SELECT,
   REQUIREMENT_MATCH_SELECT,
   REQUIREMENT_SELECT,
   withNoStore,
@@ -12,9 +11,11 @@ import {
 import { isActiveBrokerStatus } from "@/lib/deal-utils";
 import { triggerRequirementMatchFoundForSubmittedMatch } from "@/lib/email-notifications";
 import { isListingMatchingRequirement } from "@/lib/requirement-matching";
-import { fetchBrokerProfileByUserId, hydrateRequirementMatches } from "@/lib/requirements-server";
-import { hydrateListings } from "@/lib/platform-server-data";
+import { hydrateRequirementMatches } from "@/lib/requirements-server";
 import type { Listing, Requirement, RequirementMatch } from "@/lib/deal-types";
+
+const MATCH_SUBMISSION_LISTING_SELECT =
+  "id, title, area_id, price, bedrooms, status, deleted_at, created_by, area:areas(id, name, city, slug)";
 
 type SendListingChatMessageRpcRow = {
   conversation_id: string;
@@ -57,7 +58,7 @@ function buildSubmissionChatMessage(requirement: Requirement, listing: Listing, 
 }
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
-  const viewer = await getRequestUser(request);
+  const { user: viewer, brokerProfileId } = await getRequestUserWithBrokerProfileId(request);
   if (!viewer || (viewer.role !== "admin" && (viewer.role !== "broker" || !isActiveBrokerStatus(viewer.status)))) {
     return jsonError("Broker or admin access required.", 403);
   }
@@ -78,12 +79,11 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 
   if (viewer.role === "broker") {
-    const brokerProfile = await fetchBrokerProfileByUserId(supabase, viewer.id);
-    if (!brokerProfile?.id) {
+    if (!brokerProfileId) {
       return jsonError("Broker profile not found.", 404);
     }
 
-    if (requirement.broker_id !== brokerProfile.id) {
+    if (requirement.broker_id !== brokerProfileId) {
       return jsonError("You can only view matches for your own requirement.", 403);
     }
   }
@@ -98,7 +98,10 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     return jsonError(submittedMatchesResult.error.message || "Failed to load requirement matches.", 400);
   }
 
-  const matches = await hydrateRequirementMatches(supabase, (submittedMatchesResult.data as RequirementMatch[]) || []);
+  const matches = await hydrateRequirementMatches(supabase, (submittedMatchesResult.data as RequirementMatch[]) || [], {
+    includeListingDetails: false,
+    includeRequirement: false,
+  });
 
   return NextResponse.json(
     {
@@ -110,14 +113,13 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 }
 
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
-  const viewer = await getRequestUser(request);
+  const { user: viewer, brokerProfileId } = await getRequestUserWithBrokerProfileId(request);
   if (!viewer || viewer.role !== "broker" || !isActiveBrokerStatus(viewer.status)) {
     return jsonError("Active broker access required.", 403);
   }
 
   const supabase = getServiceSupabase();
-  const brokerProfile = await fetchBrokerProfileByUserId(supabase, viewer.id);
-  if (!brokerProfile?.id) {
+  if (!brokerProfileId) {
     return jsonError("Broker profile not found.", 404);
   }
 
@@ -143,13 +145,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return jsonError("Requirement not found.", 404);
   }
 
-  if (requirement.broker_id === brokerProfile.id) {
+  if (requirement.broker_id === brokerProfileId) {
     return jsonError("You cannot match your own requirement.", 400);
   }
 
   const { data: listingRows, error: listingError } = await supabase
     .from("listings")
-    .select(LISTING_SELECT)
+    .select(MATCH_SUBMISSION_LISTING_SELECT)
     .eq("id", listingId)
     .eq("created_by", viewer.id)
     .is("deleted_at", null)
@@ -159,8 +161,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return jsonError(listingError.message || "Failed to load selected listing.", 400);
   }
 
-  const hydratedListings = await hydrateListings(supabase, (listingRows as Listing[]) || []);
-  const [listing] = hydratedListings;
+  const [listing] = (listingRows as unknown as Listing[]) || [];
 
   if (!listing) {
     return jsonError("Selected listing was not found in your inventory.", 404);
@@ -183,7 +184,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       .from("requirement_matches")
       .insert({
         requirement_id: params.id,
-        sender_broker_id: brokerProfile.id,
+        sender_broker_id: brokerProfileId,
         receiver_broker_id: requirement.broker_id,
         message,
         listing_id: listingId,

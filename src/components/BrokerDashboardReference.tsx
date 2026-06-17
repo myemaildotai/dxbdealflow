@@ -16,8 +16,13 @@ type BrokerDashboardReferenceProps = {
   dashboard: BrokerDashboardData;
   overview: BrokerOverviewModel;
   activeSection: DashboardSectionId;
+  notificationHasMore: boolean;
+  notificationIsLoadingMore: boolean;
+  notificationTotalCount: number;
   priorityNotifications: BrokerNotificationFeedItem[];
+  onLoadMoreNotifications: () => Promise<void> | void;
   onSelectSection: (section: DashboardSectionId) => void;
+  onPrefetchSection?: (section: DashboardSectionId) => void;
   onMarkNotificationRead: (notification: BrokerNotificationFeedItem) => Promise<void>;
   onOpenNotificationPrimaryAction: (notification: BrokerNotificationFeedItem) => Promise<void>;
   children?: ReactNode;
@@ -40,17 +45,20 @@ const getInboxHref = (group?: ChatConversationSummary | null) =>
   group?.conversations[0] ? `/dashboard/chats/${group.conversations[0].conversationId}` : null;
 
 const getBrokerListingHref = (listingId: string) => `/dashboard/listings/${listingId}`;
+const getDashboardTabHref = (section: DashboardSectionId) => (section === "overview" ? "/dashboard" : `/dashboard/${section}`);
 const getDashboardSectionHref = (
   section: Exclude<DashboardSectionId, "overview" | "profile">,
   params?: Record<string, string>
 ) => {
-  const searchParams = new URLSearchParams({ section });
+  const pathname = `/dashboard/${section}`;
+  const searchParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
     searchParams.set(key, value);
   });
 
-  return `/dashboard?${searchParams.toString()}`;
+  const query = searchParams.toString();
+  return query ? `${pathname}?${query}` : pathname;
 };
 
 const isWithinDays = (value?: string | null, days = 7) => {
@@ -205,19 +213,29 @@ function Glyph({ name, className }: { name: string; className?: string }) {
 
 function DashboardTabButton({
   active,
+  href,
   icon,
   label,
-  onClick,
+  onIntent,
 }: {
   active: boolean;
+  href: string;
   icon: string;
   label: string;
-  onClick: () => void;
+  onIntent?: () => void;
 }) {
+  const handleIntent = () => {
+    onIntent?.();
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <Link
+      href={href}
+      prefetch
+      aria-current={active ? "page" : undefined}
+      onFocus={handleIntent}
+      onMouseEnter={handleIntent}
+      onTouchStart={handleIntent}
       className={cn(
         "inline-flex min-h-[40px] shrink-0 items-center gap-2 rounded-[8px] border px-3 py-2 text-sm font-medium transition sm:min-h-[44px] sm:px-4 md:max-xl:px-4 md:max-xl:text-sm xl:px-5 xl:text-[15px]",
         active
@@ -230,7 +248,7 @@ function DashboardTabButton({
       </span>
       <span className="min-w-0 truncate">{label}</span>
 
-    </button>
+    </Link>
   );
 }
 
@@ -331,8 +349,13 @@ export function BrokerDashboardReference({
   dashboard,
   overview,
   activeSection,
+  notificationHasMore,
+  notificationIsLoadingMore,
+  notificationTotalCount,
   priorityNotifications,
+  onLoadMoreNotifications,
   onSelectSection,
+  onPrefetchSection,
   onMarkNotificationRead,
   onOpenNotificationPrimaryAction,
   children,
@@ -347,15 +370,23 @@ export function BrokerDashboardReference({
     dashboard.areas[0] ||
     null;
 
-  const listingsThisWeek = useMemo(() => dashboard.listings.filter((listing) => isWithinDays(listing.updated_at)).length, [dashboard.listings]);
-  const pendingThisWeek = useMemo(
-    () => dashboard.listings.filter((listing) => listing.status === "pending" && isWithinDays(listing.updated_at)).length,
-    [dashboard.listings]
+  const listingsThisWeek = useMemo(
+    () => dashboard.metrics.listingsThisWeek ?? dashboard.listings.filter((listing) => isWithinDays(listing.updated_at)).length,
+    [dashboard.listings, dashboard.metrics.listingsThisWeek]
   );
-  const enquiriesThisWeek = useMemo(() => dashboard.enquiries.filter((lead) => isWithinDays(lead.created_at)).length, [dashboard.enquiries]);
+  const pendingThisWeek = useMemo(
+    () =>
+      dashboard.metrics.pendingListingsThisWeek ??
+      dashboard.listings.filter((listing) => listing.status === "pending" && isWithinDays(listing.updated_at)).length,
+    [dashboard.listings, dashboard.metrics.pendingListingsThisWeek]
+  );
+  const enquiriesThisWeek = useMemo(
+    () => dashboard.metrics.enquiriesThisWeek ?? dashboard.enquiries.filter((lead) => isWithinDays(lead.created_at)).length,
+    [dashboard.enquiries, dashboard.metrics.enquiriesThisWeek]
+  );
   const newEnquiries = useMemo(
-    () => dashboard.enquiries.filter((lead) => lead.lead_status === "new").length || dashboard.metrics.publicEnquiries,
-    [dashboard.enquiries, dashboard.metrics.publicEnquiries]
+    () => dashboard.metrics.newEnquiries ?? (dashboard.enquiries.filter((lead) => lead.lead_status === "new").length || dashboard.metrics.publicEnquiries),
+    [dashboard.enquiries, dashboard.metrics.newEnquiries, dashboard.metrics.publicEnquiries]
   );
   const matchAlerts = dashboard.metrics.unreadRequirementNotifications || 0;
   const availableMatches = dashboard.metrics.incomingRequirementMatches ?? dashboard.incomingRequirementMatches.length;
@@ -378,32 +409,37 @@ export function BrokerDashboardReference({
     return {
       total: dashboard.metrics.totalRequirements || dashboard.requirements.length,
       active: dashboard.metrics.activeRequirements ?? active,
-      closed,
-      inactive,
-      newThisWeek,
+      closed: dashboard.metrics.closedRequirements ?? closed,
+      inactive: dashboard.metrics.inactiveRequirements ?? inactive,
+      newThisWeek: dashboard.metrics.requirementsThisWeek ?? newThisWeek,
       incomingMatches: dashboard.metrics.incomingRequirementMatches ?? dashboard.incomingRequirementMatches.length,
-      contactedMatches,
+      contactedMatches: dashboard.metrics.contactedRequirementMatches ?? contactedMatches,
     };
   }, [
     dashboard.incomingRequirementMatches,
     dashboard.metrics.activeRequirements,
+    dashboard.metrics.closedRequirements,
+    dashboard.metrics.contactedRequirementMatches,
+    dashboard.metrics.inactiveRequirements,
     dashboard.metrics.incomingRequirementMatches,
+    dashboard.metrics.requirementsThisWeek,
     dashboard.metrics.totalRequirements,
     dashboard.requirements,
   ]);
   const chatsThisWeek = useMemo(
     () =>
+      dashboard.metrics.chatsThisWeek ??
       dashboard.chats.filter((group) =>
         group.conversations.some((conversation) => isWithinDays(conversation.lastMessage?.created_at))
       ).length,
-    [dashboard.chats]
+    [dashboard.chats, dashboard.metrics.chatsThisWeek]
   );
 
   const topTabs = [
     { id: "overview" as const, label: "Overview", icon: "overview" },
-    { id: "listings" as const, label: `Listings (${dashboard.listings.length})`, icon: "listings" },
-    { id: "enquiries" as const, label: `Enquiries (${dashboard.enquiries.length})`, icon: "enquiries" },
-    { id: "chats" as const, label: `Chats (${dashboard.chats.length})`, icon: "chats" },
+    { id: "listings" as const, label: `Listings (${dashboard.metrics.totalListings ?? dashboard.listings.length})`, icon: "listings" },
+    { id: "enquiries" as const, label: `Enquiries (${dashboard.metrics.publicEnquiries ?? dashboard.enquiries.length})`, icon: "enquiries" },
+    { id: "chats" as const, label: `Chats (${dashboard.metrics.activeChats ?? dashboard.chats.length})`, icon: "chats" },
     { id: "requirements" as const, label: `Requirements (${dashboard.metrics.totalRequirements || dashboard.requirements.length})`, icon: "requirements" },
     { id: "profile" as const, label: "Profile", icon: "profile" },
   ];
@@ -620,9 +656,10 @@ export function BrokerDashboardReference({
                 <DashboardTabButton
                   key={tab.id}
                   active={activeSection === tab.id}
+                  href={getDashboardTabHref(tab.id)}
                   icon={tab.icon}
                   label={tab.label}
-                  onClick={() => onSelectSection(tab.id)}
+                  onIntent={() => onPrefetchSection?.(tab.id)}
                 />
               ))}
             </div>
@@ -840,9 +877,13 @@ export function BrokerDashboardReference({
 
               <div className="hidden min-w-0 xl:col-span-1 xl:block">
                 <BrokerPriorityQueue
+                  hasMore={notificationHasMore}
+                  isLoadingMore={notificationIsLoadingMore}
                   notifications={priorityNotifications}
+                  onLoadMore={onLoadMoreNotifications}
                   onMarkAsRead={onMarkNotificationRead}
                   onOpenPrimaryAction={onOpenNotificationPrimaryAction}
+                  totalCount={notificationTotalCount}
                 />
               </div>
             </div>

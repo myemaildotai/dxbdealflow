@@ -1,9 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { unstable_cache } from "next/cache";
 import {
   COMING_SOON_MODE_SETTING_KEY,
   parseComingSoonModeState,
   type ComingSoonModeState,
 } from "@/lib/coming-soon";
+import { getServiceSupabase } from "@/lib/deal-server";
 import {
   MAINTENANCE_MODE_SETTING_KEY,
   parseMaintenanceModeState,
@@ -22,7 +24,11 @@ export type SiteModeState = {
   comingSoon: ComingSoonModeState;
 };
 
+export const SITE_MODE_STATE_CACHE_TAG = "site-mode-state";
 const SITE_MODE_CACHE_TTL_MS = 5_000;
+// Admin writes invalidate and prewarm this cache. The timed revalidation is a
+// backstop for operational changes made outside those supported write paths.
+const SHARED_SITE_MODE_REVALIDATE_SECONDS = 60;
 
 let siteModeStateCache: { value: SiteModeState; expiresAt: number } | null = null;
 let siteModeStatePromise: Promise<SiteModeState> | null = null;
@@ -54,6 +60,15 @@ async function loadSiteModeState(supabase: SupabaseClient): Promise<SiteModeStat
     comingSoon: parseComingSoonModeState(rows[COMING_SOON_MODE_SETTING_KEY] || null),
   };
 }
+
+export const getSharedSiteModeState = unstable_cache(
+  async () => loadSiteModeState(getServiceSupabase()),
+  ["shared-site-mode-state-v1"],
+  {
+    revalidate: SHARED_SITE_MODE_REVALIDATE_SECONDS,
+    tags: [SITE_MODE_STATE_CACHE_TAG],
+  }
+);
 
 export function clearSiteModeStateCache() {
   siteModeStateCache = null;

@@ -3,7 +3,17 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ResponsiveRowActionsMenu, type ResponsiveRowAction } from "@/components/ResponsiveRowActionsMenu";
-import type { ActivityLog, AdminOverview, Area, Lead, Requirement, RequirementMatch } from "@/lib/deal-types";
+import { getActivityCategory, type ActivityCategoryId } from "@/lib/activity-categories";
+import type {
+  ActivityLog,
+  Agency,
+  Area,
+  BrokerProfile,
+  CreditSummary,
+  Lead,
+  Requirement,
+  RequirementMatch,
+} from "@/lib/deal-types";
 import {
   cn,
   formatCurrency,
@@ -19,9 +29,8 @@ import {
 } from "@/lib/deal-utils";
 import { formatRequirementBedrooms } from "@/lib/requirements";
 
-type ActivityCategoryId = "listings" | "brokers" | "credits" | "requirements" | "system";
 type ActivityActionKind = "navigate" | "changes" | "enquiry" | "requirement";
-type ActivityListingSummary = {
+export type AdminActivityListingSummary = {
   id: string;
   title?: string | null;
   property_type?: string | null;
@@ -31,18 +40,18 @@ type ActivityListingSummary = {
   bedrooms?: number | null;
   area?: { name?: string | null; city?: string | null } | null;
 };
-type ActivityUserSummary = {
+export type AdminActivityUserSummary = {
   id?: string;
   first_name?: string | null;
   last_name?: string | null;
   email?: string | null;
   role?: string | null;
   status?: string | null;
-  agency?: AdminOverview["users"][number]["agency"];
-  brokerProfile?: AdminOverview["users"][number]["brokerProfile"];
-  credits?: AdminOverview["users"][number]["credits"];
+  agency?: Agency | null;
+  brokerProfile?: BrokerProfile | null;
+  credits?: CreditSummary | null;
 };
-type ActivityRequirementSummary = (Partial<Requirement> & Pick<Requirement, "id">) | AdminOverview["requirements"][number];
+export type AdminActivityRequirementSummary = Partial<Requirement> & Pick<Requirement, "id">;
 type ActivityRequirementMatchSummary = RequirementMatch;
 
 type ActivityMetaItem = {
@@ -98,16 +107,16 @@ export type ResolvedAdminActivity = ActivityLog & {
 type ResolveAdminActivityLogContext = {
   areaMap: Map<string, Area>;
   getListingDetailHref: (listingId: string) => string;
-  listingMap: Map<string, AdminOverview["listings"][number]>;
-  requirementMap: Map<string, AdminOverview["requirements"][number]>;
-  userMap: Map<string, AdminOverview["users"][number]>;
+  listingMap: Map<string, AdminActivityListingSummary>;
+  requirementMap: Map<string, AdminActivityRequirementSummary>;
+  userMap: Map<string, AdminActivityUserSummary>;
 };
 
 const ACTIVITY_ACTION_BUTTON_CLASS =
   "inline-flex min-h-[40px] items-center justify-center rounded-full border border-[#d9dfeb] bg-white px-3.5 text-[14px] font-semibold text-[#33415f] shadow-[0_10px_20px_rgba(35,41,70,0.08)] transition hover:border-[#cad3e4] hover:bg-[#f8faff] xl:min-h-[42px] xl:px-4";
 
 const ACTION_LABELS: Record<string, string> = {
-  broker_application_approved: "`Broker Application Approved`",
+  broker_application_approved: "Broker Application Approved",
   broker_application_rejected: "Broker Application Rejected",
   broker_application_submitted: "Broker Application Submitted",
   broker_profile_updated: "Broker Profile Updated",
@@ -218,25 +227,9 @@ function formatFieldLabel(field: string) {
   return FIELD_LABELS[field] || humanizeLabel(field);
 }
 
-function formatPersonName(user: ActivityUserSummary | null | undefined, fallback: string) {
+function formatPersonName(user: AdminActivityUserSummary | null | undefined, fallback: string) {
   const name = [user?.first_name, user?.last_name].filter(Boolean).join(" ").trim();
   return name || user?.email || fallback;
-}
-
-function getActivityCategory(log: ActivityLog, metadata: Record<string, unknown>): ActivityCategoryId {
-  if (log.target_table === "listings") return "listings";
-  if (log.target_table === "users" || log.target_table === "broker_profiles") return "brokers";
-  if (log.target_table === "broker_credits") return "credits";
-  if (
-    log.target_table === "requirements" ||
-    log.target_table === "requirement_matches" ||
-    log.lead?.lead_type === "requirement_match" ||
-    getMetadataString(metadata, "requirementId", "requirement_id")
-  ) {
-    return "requirements";
-  }
-
-  return "system";
 }
 
 function getActivityCategoryLabel(log: ActivityLog, category: ActivityCategoryId) {
@@ -389,7 +382,7 @@ function formatActivityValue(field: string, value: unknown, areaMap: Map<string,
   return String(value);
 }
 
-function getCurrentBrokerProfileValue(field: string, user: ActivityUserSummary | null, areaMap: Map<string, Area>) {
+function getCurrentBrokerProfileValue(field: string, user: AdminActivityUserSummary | null, areaMap: Map<string, Area>) {
   if (!user) {
     return undefined;
   }
@@ -425,7 +418,7 @@ function getActivityChanges(
   areaMap: Map<string, Area>,
   options: {
     action: string;
-    targetUser: ActivityUserSummary | null;
+    targetUser: AdminActivityUserSummary | null;
   }
 ) {
   const changedFields = metadata.changedFields;
@@ -486,6 +479,7 @@ function getListingSummary(log: ActivityLog, metadata: Record<string, unknown>, 
 
   return (
     context.listingMap.get(listingId) ||
+    log.listing ||
     (log.lead?.listing
       ? {
           ...log.lead.listing,
@@ -496,11 +490,11 @@ function getListingSummary(log: ActivityLog, metadata: Record<string, unknown>, 
   );
 }
 
-function getListingAreaLabel(listing: ActivityListingSummary | null | undefined) {
+function getListingAreaLabel(listing: AdminActivityListingSummary | null | undefined) {
   return listing?.area?.name || "Area pending";
 }
 
-function getListingSubtitle(listing: ActivityListingSummary | null | undefined) {
+function getListingSubtitle(listing: AdminActivityListingSummary | null | undefined) {
   if (!listing) {
     return "Listing details unavailable";
   }
@@ -514,7 +508,7 @@ function getListingSubtitle(listing: ActivityListingSummary | null | undefined) 
     .join(" | ");
 }
 
-function getListingMetaRows(listing: ActivityListingSummary | null | undefined) {
+function getListingMetaRows(listing: AdminActivityListingSummary | null | undefined) {
   if (!listing) {
     return [];
   }
@@ -573,7 +567,7 @@ function getRequirementLabel(requirement: { title?: string | null; area?: string
   );
 }
 
-function getRequirementStatusValue(requirement: ActivityRequirementSummary | null | undefined) {
+function getRequirementStatusValue(requirement: AdminActivityRequirementSummary | null | undefined) {
   if (!requirement) {
     return null;
   }
@@ -593,7 +587,7 @@ function getRequirementStatusValue(requirement: ActivityRequirementSummary | nul
   return null;
 }
 
-function getRequirementBudgetLine(requirement: ActivityRequirementSummary | null | undefined) {
+function getRequirementBudgetLine(requirement: AdminActivityRequirementSummary | null | undefined) {
   if (!requirement) {
     return "Budget unavailable";
   }
@@ -613,7 +607,7 @@ function getRequirementBudgetLine(requirement: ActivityRequirementSummary | null
   return "Budget flexible";
 }
 
-function getRequirementSubtitle(requirement: ActivityRequirementSummary | null | undefined) {
+function getRequirementSubtitle(requirement: AdminActivityRequirementSummary | null | undefined) {
   if (!requirement) {
     return "Requirement details unavailable";
   }
@@ -628,7 +622,7 @@ function getRequirementSubtitle(requirement: ActivityRequirementSummary | null |
     .join(" | ");
 }
 
-function getRequirementMetaRows(requirement: ActivityRequirementSummary | null | undefined) {
+function getRequirementMetaRows(requirement: AdminActivityRequirementSummary | null | undefined) {
   if (!requirement) {
     return [];
   }
@@ -644,7 +638,7 @@ function getRequirementMetaRows(requirement: ActivityRequirementSummary | null |
 function getRequirementDetails(
   log: ActivityLog,
   metadata: Record<string, unknown>,
-  requirement: ActivityRequirementSummary | null,
+  requirement: AdminActivityRequirementSummary | null,
   requirementMatch: ActivityRequirementMatchSummary | null
 ): ActivityRequirementDetails | null {
   const requirementId = getRequirementId(log, metadata, requirementMatch);
@@ -741,7 +735,7 @@ function getLeadStatusLabel(lead: Lead | null | undefined) {
 function getEnquiryDetails(
   log: ActivityLog,
   metadata: Record<string, unknown>,
-  listing: ActivityListingSummary | null,
+  listing: AdminActivityListingSummary | null,
   listingHref: string | null
 ): ActivityEnquiryDetails | null {
   if (log.target_table !== "leads") {
@@ -840,9 +834,9 @@ function getActivitySummary({
   actorName: string;
   contactName?: string | null;
   creditsToAdd?: number | null;
-  listing?: ActivityListingSummary | null;
+  listing?: AdminActivityListingSummary | null;
   log: ActivityLog;
-  requirement?: ActivityRequirementSummary | null;
+  requirement?: AdminActivityRequirementSummary | null;
   requirementMatch?: ActivityRequirementMatchSummary | null;
   targetEntityLabel: string;
   targetTitle: string;
@@ -913,7 +907,7 @@ export function resolveAdminActivityLog(
   context: ResolveAdminActivityLogContext
 ): ResolvedAdminActivity {
   const metadata = getMetadata(log);
-  const category = getActivityCategory(log, metadata);
+  const category = getActivityCategory(log);
   const categoryLabel = getActivityCategoryLabel(log, category);
   const actionLabel = formatActionLabel(log.action);
   const targetEntityLabel = getTargetEntityLabel(log);
@@ -925,11 +919,15 @@ export function resolveAdminActivityLog(
   const requirementId = getRequirementId(log, metadata, requirementMatch);
   const targetUserById =
     (log.target_table === "users" || log.target_table === "broker_credits") && log.target_id
-      ? context.userMap.get(log.target_id) || null
+      ? context.userMap.get(log.target_id) || log.targetUser || null
       : null;
   const targetUserFromActor =
-    log.target_table === "broker_profiles" && log.actor?.id ? context.userMap.get(log.actor.id) || log.actor : null;
-  const targetUser: ActivityUserSummary | null = targetUserById || targetUserFromActor || null;
+    log.target_table === "broker_profiles"
+      ? log.actor?.id
+        ? context.userMap.get(log.actor.id) || log.targetUser || log.actor
+        : log.targetUser || null
+      : null;
+  const targetUser: AdminActivityUserSummary | null = targetUserById || targetUserFromActor || null;
   const enquiryDetails = getEnquiryDetails(log, metadata, listing, listingHref);
   const requirementDetails = getRequirementDetails(log, metadata, requirement, requirementMatch);
   const { actorName, actorSubtitle } = resolveActor(log, metadata, enquiryDetails);

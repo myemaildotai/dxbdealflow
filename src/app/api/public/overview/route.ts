@@ -14,8 +14,9 @@ import type { Listing } from "@/lib/deal-types";
 
 export async function GET(request: NextRequest) {
   const supabase = getServiceSupabase();
+  const scope = request.nextUrl.searchParams.get("scope");
 
-  if (request.nextUrl.searchParams.get("scope") === "auth-me") {
+  if (scope === "auth-me") {
     const user = await getRequestUser(request);
     const requestSupabase = getRequestSupabase(request);
 
@@ -51,6 +52,29 @@ export async function GET(request: NextRequest) {
         brokerProfile: brokerProfileResult.data || null,
         agency: agencyResult.data || null,
         credits: creditsResult.data || null,
+      },
+      withNoStore()
+    );
+  }
+
+  if (scope === "home") {
+    const [areas, brokerCountResult, listingCountResult] = await Promise.all([
+      fetchAreas(supabase),
+      supabase.from("users").select("id", { count: "exact", head: true }).eq("role", "broker").in("status", ["active", "approved"]),
+      supabase
+        .from("listings")
+        .select("id", { count: "exact", head: true })
+        .eq("is_visible", true)
+        .is("deleted_at", null)
+        .in("status", ["active", "approved"]),
+    ]);
+
+    return NextResponse.json(
+      {
+        activeBrokerCount: brokerCountResult.count || 0,
+        activeListingCount: listingCountResult.count || 0,
+        recentListings: [],
+        areas,
       },
       withNoStore()
     );

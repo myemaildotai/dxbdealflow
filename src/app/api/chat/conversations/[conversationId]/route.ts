@@ -107,12 +107,16 @@ async function markConversationRead(
   readUntilSequence?: number | null,
   readAt?: string | null,
 ) {
-  await supabase.rpc("mark_chat_conversation_read", {
+  const { error } = await supabase.rpc("mark_chat_conversation_read", {
     p_conversation_id: conversation.id,
     p_reader_id: userId,
     p_read_until_sequence: readUntilSequence ?? null,
     p_read_at: readAt ?? null,
   });
+
+  if (error) {
+    throw new Error(error.message || "Failed to update conversation read state.");
+  }
 }
 
 async function getConversationBundle(

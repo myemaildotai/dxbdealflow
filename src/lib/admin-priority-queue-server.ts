@@ -11,9 +11,14 @@ import type {
   PlatformUser,
 } from "@/lib/deal-types";
 import { getFullName } from "@/lib/deal-utils";
+import {
+  createAdminNotifications,
+  markNotificationHandled,
+  markNotificationRead,
+} from "@/lib/notifications-server";
 
-export const ADMIN_PRIORITY_QUEUE_NOTIFICATION_SELECT =
-  "id, admin_user_id, target_type, target_id, sentence, is_read, read_at, source_created_at, handled_status, handled_at, created_at, updated_at";
+const ADMIN_NOTIFICATION_SELECT =
+  "id, recipient_user_id, type, message, entity_type, entity_id, is_read, read_at, handled_at, metadata, created_at, updated_at";
 
 type AdminPriorityQueueSeed = {
   target_type: AdminPriorityQueueNotificationType;
@@ -22,6 +27,21 @@ type AdminPriorityQueueSeed = {
   source_created_at: string | null;
   handled_status: AdminPriorityQueueHandledStatus | null;
   handled_at: string | null;
+};
+
+type AdminNotificationRow = {
+  id: string;
+  recipient_user_id: string;
+  type: string;
+  message: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  is_read: boolean;
+  read_at: string | null;
+  handled_at: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export function buildAdminBrokerPriorityQueueSeed(
@@ -67,23 +87,23 @@ export async function ensureAdminPriorityQueueNotificationsForAdmins(
   adminUserIds: string[],
   seeds: AdminPriorityQueueSeed[]
 ) {
-  if (!adminUserIds.length || !seeds.length) {
-    return;
-  }
-
-  const rows = adminUserIds.flatMap((adminUserId) =>
-    seeds.map((seed) => ({
-      admin_user_id: adminUserId,
-      ...seed,
-    }))
-  );
-
-  const { error } = await supabase
-    .from("admin_priority_queue_notifications")
-    .upsert(rows, { onConflict: "admin_user_id,target_type,target_id", ignoreDuplicates: true });
-
-  if (error) {
-    throw new Error(error.message || "Failed to persist admin priority queue notifications.");
+  for (const seed of seeds) {
+    await createAdminNotifications(supabase, adminUserIds, {
+      type: seed.target_type === "broker" ? "broker_application_pending" : "listing_pending_review",
+      title: seed.target_type === "broker" ? "Broker approval pending" : "Listing review pending",
+      message: seed.sentence,
+      entityType: seed.target_type,
+      entityId: seed.target_id,
+      href:
+        seed.target_type === "broker"
+          ? `/admin/brokers/${seed.target_id}`
+          : `/admin/listings/${seed.target_id}`,
+      metadata: {
+        handledStatus: seed.handled_status,
+        sourceCreatedAt: seed.source_created_at,
+      },
+      createdAt: seed.source_created_at || undefined,
+    });
   }
 }
 
@@ -101,19 +121,111 @@ export async function ensureAdminPriorityQueueNotificationsFromPendingItems(
   await ensureAdminPriorityQueueNotificationsForAdmins(supabase, adminUserIds, seeds);
 }
 
+export async function ensureAdminPriorityQueueNotificationsForAdmin(
+  supabase: SupabaseClient,
+  adminUserId: string
+) {
+  const [pendingBrokerUsersResult, pendingListingsResult] = await Promise.all([
+    supabase
+      .from("users")
+      .select("id, first_name, last_name, created_at, status")
+      .eq("role", "broker")
+      .eq("status", "pending"),
+    supabase
+      .from("listings")
+      .select("id, title, created_at, status")
+      .eq("status", "pending")
+      .is("deleted_at", null),
+  ]);
+
+  if (pendingBrokerUsersResult.error || pendingListingsResult.error) {
+    throw new Error(
+      pendingBrokerUsersResult.error?.message ||
+        pendingListingsResult.error?.message ||
+        "Failed to load pending notifications."
+    );
+  }
+
+  await ensureAdminPriorityQueueNotificationsFromPendingItems(
+    supabase,
+    [adminUserId],
+    (pendingBrokerUsersResult.data || []) as Array<
+      Pick<PlatformUser, "id" | "first_name" | "last_name" | "created_at" | "status">
+    >,
+    (pendingListingsResult.data || []) as Array<Pick<Listing, "id" | "title" | "created_at" | "status">>
+  );
+}
+
+function mapAdminNotification(row: AdminNotificationRow): AdminPriorityQueueNotification | null {
+  if (
+    (row.entity_type !== "broker" && row.entity_type !== "listing") ||
+    !row.entity_id
+  ) {
+    return null;
+  }
+
+  const metadata = row.metadata || {};
+  const handledStatus =
+    typeof metadata.handledStatus === "string"
+      ? (metadata.handledStatus as AdminPriorityQueueHandledStatus)
+      : null;
+  const sourceCreatedAt =
+    typeof metadata.sourceCreatedAt === "string" ? metadata.sourceCreatedAt : null;
+
+  return {
+    id: row.id,
+    admin_user_id: row.recipient_user_id,
+    target_type: row.entity_type,
+    target_id: row.entity_id,
+    sentence: row.message || row.type,
+    is_read: row.is_read,
+    read_at: row.read_at,
+    source_created_at: sourceCreatedAt,
+    handled_status: handledStatus,
+    handled_at: row.handled_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
 export async function fetchAdminPriorityQueueNotifications(supabase: SupabaseClient, adminUserId: string) {
   const { data, error } = await supabase
-    .from("admin_priority_queue_notifications")
-    .select(ADMIN_PRIORITY_QUEUE_NOTIFICATION_SELECT)
-    .eq("admin_user_id", adminUserId)
-    .in("target_type", ["broker", "listing"])
+    .from("notifications")
+    .select(ADMIN_NOTIFICATION_SELECT)
+    .eq("recipient_user_id", adminUserId)
+    .eq("recipient_role", "admin")
+    .eq("status", "active")
+    .in("type", ["broker_application_pending", "listing_pending_review"])
+    .is("handled_at", null)
+    .order("is_read", { ascending: true })
+    .order("priority_rank", { ascending: true })
     .order("created_at", { ascending: false });
 
   if (error) {
     throw new Error(error.message || "Failed to load admin priority queue notifications.");
   }
 
-  return ((data as AdminPriorityQueueNotification[] | null) || []);
+  return ((data as AdminNotificationRow[] | null) || []).flatMap((row) => {
+    const notification = mapAdminNotification(row);
+    return notification ? [notification] : [];
+  });
+}
+
+export async function fetchAdminPriorityQueueNotificationCount(supabase: SupabaseClient, adminUserId: string) {
+  const { count, error } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("recipient_user_id", adminUserId)
+    .eq("recipient_role", "admin")
+    .eq("status", "active")
+    .in("type", ["broker_application_pending", "listing_pending_review"])
+    .is("handled_at", null);
+
+  if (error) {
+    throw new Error(error.message || "Failed to count admin priority queue notifications.");
+  }
+
+  return count || 0;
 }
 
 export async function markAdminPriorityQueueNotificationRead(
@@ -126,39 +238,10 @@ export async function markAdminPriorityQueueNotificationRead(
     notificationId: string;
   }
 ) {
-  const { data: existingNotification, error: existingError } = await supabase
-    .from("admin_priority_queue_notifications")
-    .select("id, is_read, read_at")
-    .eq("id", notificationId)
-    .eq("admin_user_id", adminUserId)
-    .maybeSingle();
-
-  if (existingError) {
-    throw new Error(existingError.message || "Failed to load notification state.");
-  }
-
-  if (!existingNotification) {
-    throw new Error("Notification not found.");
-  }
-
-  if (existingNotification.is_read) {
-    return {
-      readAt: existingNotification.read_at,
-    };
-  }
-
-  const readAt = new Date().toISOString();
-  const { error } = await supabase
-    .from("admin_priority_queue_notifications")
-    .update({ is_read: true, read_at: readAt })
-    .eq("id", notificationId)
-    .eq("admin_user_id", adminUserId);
-
-  if (error) {
-    throw new Error(error.message || "Failed to update notification state.");
-  }
-
-  return { readAt };
+  return markNotificationRead(supabase, {
+    notificationId,
+    recipientUserId: adminUserId,
+  });
 }
 
 export async function markAdminPriorityQueueNotificationsHandled(
@@ -175,32 +258,10 @@ export async function markAdminPriorityQueueNotificationsHandled(
     actingAdminUserId?: string | null;
   }
 ) {
-  const handledAt = new Date().toISOString();
-  const { error } = await supabase
-    .from("admin_priority_queue_notifications")
-    .update({ handled_status: handledStatus, handled_at: handledAt })
-    .eq("target_type", targetType)
-    .eq("target_id", targetId);
-
-  if (error) {
-    throw new Error(error.message || "Failed to update queue notification status.");
-  }
-
-  if (!actingAdminUserId) {
-    return { handledAt };
-  }
-
-  const { error: readError } = await supabase
-    .from("admin_priority_queue_notifications")
-    .update({ is_read: true, read_at: handledAt })
-    .eq("admin_user_id", actingAdminUserId)
-    .eq("target_type", targetType)
-    .eq("target_id", targetId)
-    .eq("is_read", false);
-
-  if (readError) {
-    throw new Error(readError.message || "Failed to update read state for handled notifications.");
-  }
-
-  return { handledAt };
+  return markNotificationHandled(supabase, {
+    actingUserId: actingAdminUserId,
+    entityId: targetId,
+    entityType: targetType,
+    handledStatus,
+  });
 }

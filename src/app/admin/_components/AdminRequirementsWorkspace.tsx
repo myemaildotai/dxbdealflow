@@ -26,11 +26,12 @@ import { ListPaginationControls } from "@/components/ListPaginationControls";
 import { RequirementDeleteDialog } from "@/components/RequirementDeleteDialog";
 import { RequirementMatchesAdminModal } from "@/components/RequirementMatchesAdminModal";
 import { SearchField } from "@/components/SearchField";
+import { SkeletonBlock } from "@/components/SkeletonBlock";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useClientPagination } from "@/hooks/useClientPagination";
 import { invalidateRequirementCaches } from "@/lib/client-cache";
 import { apiFetch } from "@/lib/deal-api";
-import type { Requirement, RequirementMatch } from "@/lib/deal-types";
+import type { AdminRequirementListCounts, Requirement, RequirementMatch } from "@/lib/deal-types";
 import {
   cn,
   formatCurrency,
@@ -43,6 +44,7 @@ import {
   statusClasses,
 } from "@/lib/deal-utils";
 import { formatRequirementBedrooms, getRequirementStatus } from "@/lib/requirements";
+import { PAGE_SIZE_OPTIONS, type PaginationMeta } from "@/lib/pagination";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 
 type RequirementMatchesResponse = {
@@ -50,9 +52,37 @@ type RequirementMatchesResponse = {
 };
 
 type RequirementFilterId = "all" | "active" | "inactive" | "deleted";
+type RequirementStatusAction = "activate" | "deactivate";
+type PendingRequirementStatusAction = {
+  action: RequirementStatusAction;
+  requirement: Requirement;
+};
+type RequirementQueryState = {
+  filter: RequirementFilterId;
+  search: string;
+};
 
 const ACTION_MENU_Z_INDEX = 120;
 const REQUIREMENT_TABLE_GRID_CLASS_NAME = "xl:grid-cols-[minmax(0,1.9fr)_minmax(0,1.05fr)_minmax(0,0.95fr)_minmax(0,1fr)_minmax(0,14rem)]";
+
+function AdminRequirementsSkeletonRows({ rows }: { rows: number }) {
+  return (
+    <div className={ADMIN_TABLE_ROW_GROUP_CLASS} aria-hidden="true">
+      {Array.from({ length: rows }).map((_, rowIndex) => (
+        <div key={rowIndex} className={ADMIN_TABLE_ROW_CLASS}>
+          <div className={cn("grid grid-cols-1 items-start gap-2 sm:gap-3 xl:grid xl:items-center xl:gap-4", REQUIREMENT_TABLE_GRID_CLASS_NAME)}>
+            {Array.from({ length: 5 }).map((__, columnIndex) => (
+              <div key={columnIndex} className={cn("min-w-0", columnIndex > 0 && "hidden xl:block")}>
+                <SkeletonBlock className="h-4 w-3/4 rounded-xl bg-[#e2e8f0]" />
+                <SkeletonBlock className="mt-2 h-3 w-1/2 rounded-xl bg-[#e2e8f0]" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function getRequirementLabel(requirement: Pick<Requirement, "title" | "area">) {
   return requirement.title || `Buyer brief in ${requirement.area || "preferred areas"}`;
@@ -198,6 +228,63 @@ function RequirementDetailField({
       <p className="truncate text-[11px] font-semibold uppercase tracking-[0.2em] text-[#8d96a9]">{label}</p>
       <div className="mt-2 break-words text-sm font-semibold text-[#26324c] sm:text-[15px]">{value}</div>
     </div>
+  );
+}
+
+function AdminRequirementStatusConfirmationDialog({
+  action,
+  loading,
+  onClose,
+  onConfirm,
+}: {
+  action: RequirementStatusAction;
+  loading: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const isActivating = action === "activate";
+  const closeIfIdle = () => {
+    if (!loading) {
+      onClose();
+    }
+  };
+
+  return (
+    <AdminWorkspaceModalShell onClose={closeIfIdle} maxWidthClassName="max-w-lg">
+      <div className="p-3 sm:p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-brand-orange">Confirm Requirement Action</p>
+            <h3 className="mt-2 text-2xl font-semibold text-brand-navy">
+              {isActivating ? "Activate requirement?" : "Deactivate requirement?"}
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-brand-slate">
+              {isActivating
+                ? "This requirement will become active and visible again."
+                : "This requirement will be deactivated and hidden from active requirement views."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={closeIfIdle}
+            className="modal-close-button"
+            disabled={loading}
+            aria-label="Close confirmation"
+          >
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+
+        <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
+          <button type="button" className="btn-primary" onClick={onConfirm} disabled={loading}>
+            {loading ? "Saving..." : isActivating ? "Activate" : "Deactivate"}
+          </button>
+        </div>
+      </div>
+    </AdminWorkspaceModalShell>
   );
 }
 
@@ -537,7 +624,7 @@ function RequirementActionsMenu({
   onOpenChange: (open: boolean) => void;
   onViewMatches: () => void;
   onView: () => void;
-  onToggleRequirement: (nextAction: "activate" | "deactivate") => void;
+  onToggleRequirement: (nextAction: RequirementStatusAction) => void;
   onDeleteRequirement: () => void;
 }) {
   const toggleAction = requirement.is_active ? "deactivate" : "activate";
@@ -628,15 +715,27 @@ function RequirementActionsMenu({
 
 export function AdminRequirementsWorkspace({
   requirements,
+  counts,
   dateFilter,
-  listingReturnHref = "/admin?tab=requirements",
+  isLoading = false,
+  listingReturnHref = "/admin/requirements",
+  pagination: serverPagination,
   stateResetKey,
+  onPageChange,
+  onPageSizeChange,
+  onQueryChange,
   onRefresh,
 }: {
   requirements: Requirement[];
+  counts?: AdminRequirementListCounts;
   dateFilter: AdminDashboardDateFilterValue;
+  isLoading?: boolean;
   listingReturnHref?: string;
+  pagination?: PaginationMeta;
   stateResetKey?: string | number | null;
+  onPageChange?: (page: number) => void;
+  onPageSizeChange?: (pageSize: number) => void;
+  onQueryChange?: (query: RequirementQueryState) => void;
   onRefresh: () => Promise<unknown>;
 }) {
   const { enqueueSnackbar } = useSnackbar();
@@ -644,11 +743,13 @@ export function AdminRequirementsWorkspace({
   const [searchQuery, setSearchQuery] = useState("");
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  const [pendingStatusAction, setPendingStatusAction] = useState<PendingRequirementStatusAction | null>(null);
   const [pendingDeleteRequirement, setPendingDeleteRequirement] = useState<Requirement | null>(null);
   const [detailsRequirement, setDetailsRequirement] = useState<Requirement | null>(null);
   const [matchesRequirement, setMatchesRequirement] = useState<Requirement | null>(null);
   const [selectedRequirementMatches, setSelectedRequirementMatches] = useState<RequirementMatch[]>([]);
   const [matchesLoading, setMatchesLoading] = useState(false);
+  const statusActionPendingRef = useRef(false);
   const debouncedSearchQuery = useDebouncedValue(searchQuery, 250);
   const normalizedSearchQuery = normalizeSearchQuery(debouncedSearchQuery);
   const normalizedCountSearchQuery = normalizeSearchQuery(searchQuery);
@@ -711,11 +812,24 @@ export function AdminRequirementsWorkspace({
     setPage,
     setPageSize,
   } = useClientPagination(filteredRequirements, {
-    resetKey: `${filter}|${normalizedSearchQuery}|${dateFilter.id}|${dateFilter.range?.startDate || ""}|${dateFilter.range?.endDate || ""}|${requirements.length}`,
-  });
+      resetKey: `${filter}|${normalizedSearchQuery}|${dateFilter.id}|${dateFilter.range?.startDate || ""}|${dateFilter.range?.endDate || ""}|${requirements.length}`,
+    });
+  const isServerPaginated = !!serverPagination && !!onPageChange && !!onPageSizeChange;
+  const visibleRequirements = isServerPaginated ? requirements : filteredRequirements;
+  const renderedRequirements = isServerPaginated ? requirements : paginatedRequirements;
+  const resolvedPagination = isServerPaginated ? serverPagination : pagination;
+  const resolvedPageSizeOptions = isServerPaginated ? PAGE_SIZE_OPTIONS : pageSizeOptions;
+  const resolvedSetPage = isServerPaginated ? onPageChange : setPage;
+  const resolvedSetPageSize = isServerPaginated ? onPageSizeChange : setPageSize;
 
   const resolvedDetailsRequirement = detailsRequirement ? requirements.find((requirement) => requirement.id === detailsRequirement.id) || detailsRequirement : null;
   const resolvedMatchesRequirement = matchesRequirement ? requirements.find((requirement) => requirement.id === matchesRequirement.id) || matchesRequirement : null;
+  const resolvedPendingStatusAction = pendingStatusAction
+    ? {
+        action: pendingStatusAction.action,
+        requirement: requirements.find((requirement) => requirement.id === pendingStatusAction.requirement.id) || pendingStatusAction.requirement,
+      }
+    : null;
   const resolvedPendingDeleteRequirement = pendingDeleteRequirement
     ? requirements.find((requirement) => requirement.id === pendingDeleteRequirement.id) || pendingDeleteRequirement
     : null;
@@ -725,10 +839,18 @@ export function AdminRequirementsWorkspace({
   }, [filter]);
 
   useEffect(() => {
+    onQueryChange?.({
+      filter,
+      search: normalizedSearchQuery,
+    });
+  }, [filter, normalizedSearchQuery, onQueryChange]);
+
+  useEffect(() => {
     setFilter("all");
     setSearchQuery("");
     setActionKey(null);
     setOpenActionMenuId(null);
+    setPendingStatusAction(null);
     setPendingDeleteRequirement(null);
     setDetailsRequirement(null);
     setMatchesRequirement(null);
@@ -741,7 +863,12 @@ export function AdminRequirementsWorkspace({
   }, [onRefresh]);
 
   const toggleRequirement = useCallback(
-    async (requirement: Requirement, nextAction: "activate" | "deactivate") => {
+    async (requirement: Requirement, nextAction: RequirementStatusAction) => {
+      if (statusActionPendingRef.current) {
+        return;
+      }
+
+      statusActionPendingRef.current = true;
       setActionKey(`${requirement.id}:${nextAction}`);
 
       try {
@@ -751,10 +878,12 @@ export function AdminRequirementsWorkspace({
         });
         invalidateRequirementCaches(requirement.id);
         await refreshRequirements();
+        setPendingStatusAction(null);
         enqueueSnackbar(nextAction === "deactivate" ? "Requirement deactivated." : "Requirement reactivated.", { variant: "success" });
       } catch (error) {
         enqueueSnackbar(error instanceof Error ? error.message : "Failed to update requirement.", { variant: "error" });
       } finally {
+        statusActionPendingRef.current = false;
         setActionKey(null);
       }
     },
@@ -807,7 +936,15 @@ export function AdminRequirementsWorkspace({
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:-mx-6 sm:px-6 xl:mx-0 xl:px-0">
           <div className="flex min-w-max gap-2 xl:min-w-0 xl:flex-wrap">
-            {requirementFilters.map((item) => (
+            {(counts && isServerPaginated
+              ? [
+                  { id: "all" as const, label: "All", count: counts.all },
+                  { id: "active" as const, label: "Active", count: counts.active },
+                  { id: "inactive" as const, label: "Inactive", count: counts.inactive },
+                  { id: "deleted" as const, label: "Deleted", count: counts.deleted },
+                ]
+              : requirementFilters
+            ).map((item) => (
               <AdminSubTabPill
                 key={item.id}
                 active={filter === item.id}
@@ -844,9 +981,11 @@ export function AdminRequirementsWorkspace({
           ))}
         </div>
 
-        {filteredRequirements.length ? (
+        {isLoading ? (
+          <AdminRequirementsSkeletonRows rows={resolvedPagination.pageSize} />
+        ) : visibleRequirements.length ? (
           <div className={ADMIN_TABLE_ROW_GROUP_CLASS}>
-            {paginatedRequirements.map((requirement) => {
+            {renderedRequirements.map((requirement) => {
               const brokerName = requirement.owner ? getFullName(requirement.owner.first_name, requirement.owner.last_name) : "Broker unavailable";
               const requirementTitle = getRequirementLabel(requirement);
               const resolvedStatus = getRequirementResolvedStatus(requirement);
@@ -954,7 +1093,7 @@ export function AdminRequirementsWorkspace({
                             setOpenActionMenuId(null);
                             setDetailsRequirement(requirement);
                           }}
-                          onToggleRequirement={(nextAction) => void toggleRequirement(requirement, nextAction)}
+                          onToggleRequirement={(nextAction) => setPendingStatusAction({ action: nextAction, requirement })}
                           onDeleteRequirement={() => setPendingDeleteRequirement(requirement)}
                         />
                       </div>
@@ -980,13 +1119,13 @@ export function AdminRequirementsWorkspace({
         )}
       </div>
 
-      {filteredRequirements.length ? (
+      {visibleRequirements.length ? (
         <ListPaginationControls
-          pagination={pagination}
-          pageSizeOptions={pageSizeOptions}
+          pagination={resolvedPagination}
+          pageSizeOptions={resolvedPageSizeOptions}
           itemLabel="requirements"
-          onPageChange={setPage}
-          onPageSizeChange={setPageSize}
+          onPageChange={resolvedSetPage}
+          onPageSizeChange={resolvedSetPageSize}
         />
       ) : null}
 
@@ -996,6 +1135,15 @@ export function AdminRequirementsWorkspace({
           loading={actionKey === `${resolvedPendingDeleteRequirement.id}:delete`}
           onClose={() => setPendingDeleteRequirement(null)}
           onConfirm={() => void deleteRequirement()}
+        />
+      ) : null}
+
+      {resolvedPendingStatusAction ? (
+        <AdminRequirementStatusConfirmationDialog
+          action={resolvedPendingStatusAction.action}
+          loading={actionKey === `${resolvedPendingStatusAction.requirement.id}:${resolvedPendingStatusAction.action}`}
+          onClose={() => setPendingStatusAction(null)}
+          onConfirm={() => void toggleRequirement(resolvedPendingStatusAction.requirement, resolvedPendingStatusAction.action)}
         />
       ) : null}
 

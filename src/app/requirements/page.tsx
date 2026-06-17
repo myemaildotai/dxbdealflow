@@ -156,6 +156,7 @@ export default function RequirementsPage() {
       const params = new URLSearchParams(queryString);
       params.set("page", String(page));
       params.set("pageSize", String(pageSize));
+      if (page > 1) params.set("includeStatic", "0");
       return `/api/requirements?${params.toString()}`;
     },
     [queryString]
@@ -197,6 +198,8 @@ export default function RequirementsPage() {
           if (mode === "append" && currentResponse) {
             return {
               ...payload,
+              areas: payload.areas.length ? payload.areas : currentResponse.areas,
+              myListings: payload.myListings.length ? payload.myListings : currentResponse.myListings,
               requirements: mergeUniqueRequirements(currentResponse.requirements, payload.requirements),
             };
           }

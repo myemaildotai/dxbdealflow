@@ -226,7 +226,9 @@ export interface RequirementMatch {
   listing_id: string | null;
   status: RequirementMatchStatus;
   created_at: string;
-  listing?: (Pick<Listing, "id" | "title" | "property_type" | "price" | "status"> & {
+  listing?: (Pick<Listing, "id" | "title" | "status"> & {
+    property_type?: Listing["property_type"];
+    price?: number;
     area?: Pick<Area, "name" | "city"> | null;
     bedrooms?: number | null;
     is_visible?: boolean;
@@ -372,6 +374,11 @@ export interface ChatConversationSummary {
   conversations: PrivateChatThreadSummary[];
 }
 
+export interface BrokerChatNavigationSummary {
+  listing: Pick<Listing, "id">;
+  conversations: Array<Pick<PrivateChatThreadSummary, "conversationId">>;
+}
+
 export interface ActivityLog {
   id: string;
   action: string;
@@ -380,6 +387,10 @@ export interface ActivityLog {
   created_at: string;
   metadata: Record<string, unknown> | null;
   actor?: Pick<PlatformUser, "id" | "first_name" | "last_name" | "email" | "role"> | null;
+  targetUser?: Pick<PlatformUser, "id" | "first_name" | "last_name" | "email" | "role" | "status"> | null;
+  listing?: (Pick<Listing, "id" | "title" | "property_type" | "price" | "status" | "bedrooms" | "deleted_at"> & {
+    area?: Pick<Area, "name" | "city"> | null;
+  }) | null;
   lead?: Lead | null;
   requirement?: Requirement | null;
   requirementMatch?: RequirementMatch | null;
@@ -397,6 +408,17 @@ export interface DashboardMetrics {
   myEnquiries?: number;
   incomingRequirementMatches?: number;
   unreadRequirementNotifications?: number;
+  listingsThisWeek?: number;
+  pendingListingsThisWeek?: number;
+  attentionListings?: number;
+  newEnquiries?: number;
+  enquiriesThisWeek?: number;
+  chatsThisWeek?: number;
+  requirementsThisWeek?: number;
+  closedRequirements?: number;
+  inactiveRequirements?: number;
+  contactedRequirementMatches?: number;
+  listingsWithChats?: number;
 }
 
 export interface BrokerDashboardData {
@@ -448,6 +470,100 @@ export interface AdminMetrics {
   activeRequirements: number;
   publicEnquiries: number;
   totalChats: number;
+  pendingBrokerUsersThisWeek: number;
+  approvedBrokerUsersThisWeek: number;
+  pendingListingsThisWeek: number;
+  approvedListingsThisWeek: number;
+  activeRequirementsThisWeek: number;
+}
+
+export interface AdminTabCounts {
+  brokers: number;
+  listings: number;
+  chats: number;
+  requirements: number;
+  enquiries: number;
+  leads: number;
+  activity: number;
+}
+
+export type AdminBrokerListItem = PlatformUser & {
+  brokerProfile: Pick<
+    BrokerProfile,
+    | "user_id"
+    | "profile_photo"
+    | "rera_brn"
+    | "approved_at"
+    | "created_at"
+    | "updated_at"
+  > | null;
+  agency: Pick<Agency, "id" | "name" | "rera_brn" | "status" | "created_at" | "updated_at"> | null;
+  credits: CreditSummary | null;
+};
+
+export type AdminListingListItem = Pick<
+  Listing,
+  | "id"
+  | "title"
+  | "property_type"
+  | "deal_type"
+  | "bedrooms"
+  | "area_id"
+  | "developer"
+  | "price"
+  | "status"
+  | "is_visible"
+  | "created_at"
+  | "updated_at"
+  | "deleted_at"
+  | "created_by"
+  | "approved_at"
+> & {
+  area?: Area | null;
+  owner?: Pick<PlatformUser, "id" | "first_name" | "last_name" | "email"> | null;
+};
+export type AdminRequirementListItem = Requirement;
+export type AdminEnquiryListItem = AdminEnquiry;
+export type AdminComingSoonListItem = ComingSoonRegistration;
+
+export type AdminBrokerListCounts = {
+  all: number;
+  approved: number;
+  pending: number;
+  rejected: number;
+  deactivated: number;
+};
+
+export type AdminListingListCounts = {
+  all: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  inactive: number;
+  deleted: number;
+};
+
+export type AdminRequirementListCounts = {
+  all: number;
+  active: number;
+  inactive: number;
+  deleted: number;
+};
+
+export type AdminEnquiryListCounts = {
+  all: number;
+  unreplied: number;
+  replied: number;
+  failed: number;
+};
+
+export interface AdminPaginatedResponse<TItem, TCounts = Record<string, number>> {
+  items: TItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  counts: TCounts;
 }
 
 export type AdminPriorityQueueNotificationType = "broker" | "listing";
@@ -468,36 +584,28 @@ export interface AdminPriorityQueueNotification {
   updated_at: string;
 }
 
+export type AdminChatGroup = {
+  listing: Pick<Listing, "id" | "title" | "status" | "price" | "is_visible" | "deleted_at"> & {
+    area?: Pick<Area, "name" | "city"> | null;
+    listing_images?: ListingImage[];
+  };
+  conversations: Array<{
+    conversationId: string;
+    owner: (Pick<PlatformUser, "id" | "first_name" | "last_name" | "email"> & { profile_photo?: string | null }) | null;
+    broker: (Pick<PlatformUser, "id" | "first_name" | "last_name" | "email"> & { profile_photo?: string | null }) | null;
+    lastMessageAt: string;
+    lastMessage: ChatMessage | null;
+    messageCount: number;
+    unreadCount: number;
+    ownerUnreadCount: number;
+    brokerUnreadCount: number;
+    messages: ChatMessage[];
+  }>;
+};
+
 export interface AdminOverview {
   metrics: AdminMetrics;
-  applications: Array<PlatformUser & { brokerProfile: BrokerProfile | null; agency: Agency | null; credits: CreditSummary | null }>;
-  users: Array<PlatformUser & { brokerProfile: BrokerProfile | null; agency: Agency | null; credits: CreditSummary | null }>;
-  listings: Listing[];
-  priorityQueue: AdminPriorityQueueNotification[];
-  requirements: Requirement[];
-  enquiries: AdminEnquiry[];
-  comingSoonRegistrations: ComingSoonRegistration[];
-  chats: Array<{
-    listing: Pick<Listing, "id" | "title" | "status" | "price" | "is_visible" | "deleted_at"> & {
-      area?: Pick<Area, "name" | "city"> | null;
-      listing_images?: ListingImage[];
-    };
-    conversations: Array<{
-      conversationId: string;
-      owner: (Pick<PlatformUser, "id" | "first_name" | "last_name" | "email"> & { profile_photo?: string | null }) | null;
-      broker: (Pick<PlatformUser, "id" | "first_name" | "last_name" | "email"> & { profile_photo?: string | null }) | null;
-      lastMessageAt: string;
-      lastMessage: ChatMessage | null;
-      messageCount: number;
-      unreadCount: number;
-      ownerUnreadCount: number;
-      brokerUnreadCount: number;
-      messages: ChatMessage[];
-    }>;
-  }>;
-  activity: ActivityLog[];
-  activityTotal: number;
-  activityResponse: AdminActivityResponse;
+  tabCounts: AdminTabCounts;
   areas: Area[];
 }
 
@@ -507,7 +615,7 @@ export type AdminChatConversationCursor = {
 };
 
 export interface AdminChatPage {
-  chats: AdminOverview["chats"];
+  chats: AdminChatGroup[];
   hasMore: boolean;
   nextCursor: AdminChatConversationCursor | null;
   totalConversations: number;
@@ -536,6 +644,55 @@ export interface AdminBrokerDetail {
     requirements: Requirement[];
     enquiries: AdminEnquiry[];
     activity: ActivityLog[];
+  };
+}
+
+export interface AdminBrokerOverview {
+  broker: PlatformUser & {
+    brokerProfile: BrokerProfile | null;
+    agency: Agency | null;
+    credits: CreditSummary | null;
+    coveredAreas: Area[];
+  };
+  counts: {
+    listings: {
+      total: number;
+      active: number;
+      pending: number;
+      deleted: number;
+    };
+    requirements: {
+      total: number;
+      active: number;
+      inactive: number;
+      deleted: number;
+      submittedMatches: number;
+      withSubmittedMatches: number;
+    };
+    enquiries: number;
+    activity: number;
+  };
+}
+
+export interface AdminBrokerActivityResponse {
+  activity: ActivityLog[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+    hasNextPage: boolean;
+    hasPreviousPage: boolean;
+  };
+  totalCount: number;
+  filteredCount: number;
+  categoryCounts: {
+    all: number;
+    listings: number;
+    brokers: number;
+    credits: number;
+    requirements: number;
+    system: number;
   };
 }
 

@@ -5,8 +5,8 @@ import { applyClientSession, resetClientSessionState } from "@/lib/client-sessio
 import { supabase, syncSupabaseRealtimeAuth } from "@/lib/supabase";
 import { AuthContext } from "./authContext";
 import { AuthUser } from "./types";
-import { Agency, BrokerProfile, PlatformUser } from "@/lib/deal-types";
 import { isBlockedBroker } from "@/lib/route-access";
+import { clearHydratedAuthProfileCache, getHydratedAuthProfile } from "./auth-hydration";
 import { clearServerSession, syncServerSessionTokens } from "./session-sync";
 
 type SessionUser = {
@@ -17,13 +17,6 @@ type SessionUser = {
   user_metadata?: Record<string, unknown>;
 };
 
-type HydratedProfilePayload = {
-  platformUser: PlatformUser | null;
-  brokerProfile: BrokerProfile | null;
-  agency: Agency | null;
-};
-
-const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const PASSWORD_RESET_PATH = "/update-password";
 const pickFirstString = (...values: unknown[]): string | null => {
   for (const value of values) {
@@ -59,39 +52,22 @@ function buildBaseUser(user: SessionUser): AuthUser {
   };
 }
 
-async function fetchHydratedProfile(accessToken: string): Promise<HydratedProfilePayload | null> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const response = await fetch("/api/public/overview?scope=auth-me", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      credentials: "same-origin",
-      cache: "no-store",
-    });
-
-    if (response.ok) {
-      return (await response.json()) as HydratedProfilePayload;
-    }
-
-    if ((response.status === 401 || response.status === 403) && attempt < 3) {
-      await sleep(150);
-      continue;
-    }
-
-    return null;
-  }
-
-  return null;
-}
-
-async function hydrateUser(user: SessionUser, accessToken?: string | null): Promise<AuthUser> {
+async function hydrateUser(
+  user: SessionUser,
+  accessToken?: string | null,
+  forceHydrationRefresh = false
+): Promise<AuthUser> {
   const baseUser = buildBaseUser(user);
 
   if (!accessToken) {
     return baseUser;
   }
 
-  const payload = await fetchHydratedProfile(accessToken);
+  if (forceHydrationRefresh) {
+    clearHydratedAuthProfileCache(accessToken);
+  }
+
+  const payload = await getHydratedAuthProfile(accessToken, user.id);
   const platformUser = payload?.platformUser ?? null;
 
   if (!platformUser) {
@@ -154,6 +130,7 @@ export function useAuthInit(
       refreshToken?: string | null,
       options?: {
         clearUserBeforeSync?: boolean;
+        forceHydrationRefresh?: boolean;
         showLoader?: boolean;
       }
     ) => {
@@ -176,13 +153,14 @@ export function useAuthInit(
 
       try {
         if (sessionUser) {
-          const hydratedUser = await hydrateUser(sessionUser, accessToken);
+          const hydratedUser = await hydrateUser(sessionUser, accessToken, options?.forceHydrationRefresh);
 
           if (!isCurrentSync()) {
             return;
           }
 
           if (isBlockedBroker(hydratedUser) && !isPasswordResetRoute()) {
+            clearHydratedAuthProfileCache();
             resetClientSessionState(null);
             commitUser(null);
             commitError(null);
@@ -214,6 +192,7 @@ export function useAuthInit(
           }
 
           await syncSupabaseRealtimeAuth(null);
+          clearHydratedAuthProfileCache();
           resetClientSessionState(null, { clearAuthStorage: true });
           commitUser(null);
         }
@@ -259,14 +238,17 @@ export function useAuthInit(
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       const sessionUser = session?.user ?? null;
       const isUserSwitch = !!sessionUser && !!currentUser && currentUser.uid !== sessionUser.id;
       const shouldShowLoader = !!sessionUser && (!currentUser || isUserSwitch);
+      const forceHydrationRefresh =
+        event === "USER_UPDATED" || event === "PASSWORD_RECOVERY" || event === "MFA_CHALLENGE_VERIFIED";
 
       window.setTimeout(() => {
         void syncSessionUser(sessionUser, session?.access_token ?? null, session?.refresh_token ?? null, {
           clearUserBeforeSync: !sessionUser || isUserSwitch,
+          forceHydrationRefresh,
           showLoader: shouldShowLoader,
         });
       }, 0);

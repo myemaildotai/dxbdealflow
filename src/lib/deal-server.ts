@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { SUPABASE_CONFIG } from "@/config";
+import type { PlatformUser } from "@/lib/deal-types";
 import { isActiveBrokerStatus } from "@/lib/deal-utils";
 
 export const USER_SELECT =
@@ -161,24 +162,61 @@ async function resolveRequestAuth(request: NextRequest): Promise<ResolvedRequest
   };
 }
 
-export async function getRequestUser(request: NextRequest) {
+type RequestUserContext = {
+  user: PlatformUser | null;
+  brokerProfileId: string | null;
+};
+
+async function getRequestUserContext(
+  request: NextRequest,
+  { includeBrokerProfileId = false }: { includeBrokerProfileId?: boolean } = {}
+): Promise<RequestUserContext> {
   const auth = await resolveRequestAuth(request);
 
   if (!auth) {
-    return null;
+    return { user: null, brokerProfileId: null };
   }
 
   const serviceSupabase = getServiceSupabase();
-  const { data: profile } = await serviceSupabase.from("users").select(USER_SELECT).eq("id", auth.authUserId).maybeSingle();
-  return profile ?? null;
+  const select = includeBrokerProfileId ? `${USER_SELECT}, broker_profiles(id)` : USER_SELECT;
+  const { data: profile } = await serviceSupabase.from("users").select(select).eq("id", auth.authUserId).maybeSingle();
+
+  if (!profile) {
+    return { user: null, brokerProfileId: null };
+  }
+
+  if (!includeBrokerProfileId) {
+    return { user: profile as unknown as PlatformUser, brokerProfileId: null };
+  }
+
+  const { broker_profiles: brokerProfile, ...user } = profile as unknown as PlatformUser & {
+    broker_profiles?: { id?: string | null } | null;
+  };
+
+  return {
+    user: user as PlatformUser,
+    brokerProfileId: brokerProfile?.id ?? null,
+  };
 }
 
-export async function requireApprovedBroker(request: NextRequest) {
-  const user = await getRequestUser(request);
+export async function getRequestUser(request: NextRequest) {
+  const context = await getRequestUserContext(request);
+  return context.user;
+}
+
+export async function getRequestUserWithBrokerProfileId(request: NextRequest) {
+  return getRequestUserContext(request, { includeBrokerProfileId: true });
+}
+
+export async function requireApprovedBroker(
+  request: NextRequest,
+  options: { includeBrokerProfileId?: boolean } = {}
+) {
+  const { user, brokerProfileId } = await getRequestUserContext(request, options);
   if (!user || user.role !== "broker" || !isActiveBrokerStatus(user.status)) {
     return { error: NextResponse.json({ error: "Broker access required." }, { status: 403 }) };
   }
-  return { user };
+  return { user, brokerProfileId };
 }
 
 export async function requireAdmin(request: NextRequest) {

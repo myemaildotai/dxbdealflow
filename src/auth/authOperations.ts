@@ -6,15 +6,8 @@ import { getBrokerStatusRedirectPath, getDefaultRouteForUser, isBlockedBrokerSta
 import type { UserStatus } from "@/lib/deal-types";
 import { PASSWORD_RESET_FAILED_MESSAGE, type PasswordResetRequestResult } from "@/auth/passwordReset";
 import type { User } from "@supabase/supabase-js";
+import { clearHydratedAuthProfileCache, getHydratedAuthProfile } from "./auth-hydration";
 import { clearServerSession, syncServerSession } from "./session-sync";
-
-type HydratedRoutePayload = {
-  platformUser?: {
-    role?: "broker" | "admin" | null;
-    status?: "pending" | "active" | "approved" | "rejected" | "suspended" | "deactivated" | null;
-    email_verified_at?: string | null;
-  } | null;
-};
 
 type PostSignInResolution = {
   destination: string;
@@ -34,8 +27,6 @@ export class BrokerAccessBlockedError extends Error {
   }
 }
 
-const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
-
 function getBrokerAccessBlockedMessage(status: UserStatus | null) {
   switch (status) {
     case "pending":
@@ -52,35 +43,11 @@ function getBrokerAccessBlockedMessage(status: UserStatus | null) {
 }
 
 async function clearBlockedBrokerAuthAttempt() {
+  clearHydratedAuthProfileCache();
   resetClientSessionState(null);
   await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
   resetClientSessionState(null, { clearAuthStorage: true });
   await clearServerSession().catch(() => undefined);
-}
-
-async function fetchHydratedAuthProfile(accessToken: string): Promise<HydratedRoutePayload | null> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const response = await fetch("/api/public/overview?scope=auth-me", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      credentials: "same-origin",
-      cache: "no-store",
-    });
-
-    if (response.ok) {
-      return (await response.json()) as HydratedRoutePayload;
-    }
-
-    if ((response.status === 401 || response.status === 403) && attempt < 3) {
-      await sleep(150);
-      continue;
-    }
-
-    break;
-  }
-
-  return null;
 }
 
 async function fetchResolvedRoute(accessToken: string, userId: string) {
@@ -89,7 +56,7 @@ async function fetchResolvedRoute(accessToken: string, userId: string) {
 }
 
 async function fetchPostSignInResolution(accessToken: string, userId: string): Promise<PostSignInResolution> {
-  const payload = await fetchHydratedAuthProfile(accessToken);
+  const payload = await getHydratedAuthProfile(accessToken, userId);
 
   if (!payload) {
     return {
@@ -122,8 +89,8 @@ async function fetchPostSignInResolution(accessToken: string, userId: string): P
   };
 }
 
-async function assertBrokerCanCreateSession(accessToken: string) {
-  const payload = await fetchHydratedAuthProfile(accessToken);
+async function assertBrokerCanCreateSession(accessToken: string, userId: string) {
+  const payload = await getHydratedAuthProfile(accessToken, userId);
   const platformUser = payload?.platformUser ?? null;
 
   if (platformUser?.role === "broker" && isBlockedBrokerStatus(platformUser.status)) {
@@ -140,7 +107,7 @@ export const authOperations = {
       throw new Error("Logged in but no user session was returned.");
     }
     resetClientSessionState(data.user.id);
-    await assertBrokerCanCreateSession(data.session.access_token);
+    await assertBrokerCanCreateSession(data.session.access_token, data.user.id);
     await syncServerSession(data.session);
     return data;
   },
@@ -166,6 +133,7 @@ export const authOperations = {
   },
 
   async signOut() {
+    clearHydratedAuthProfileCache();
     resetClientSessionState(null);
     const { error } = await supabase.auth.signOut({ scope: "local" });
     if (error) throw error;

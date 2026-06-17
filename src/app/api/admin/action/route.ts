@@ -163,10 +163,14 @@ export async function POST(request: NextRequest) {
           await ensureAdminPriorityQueueNotificationsForAdmins(supabase, adminUserIds, [buildAdminListingPriorityQueueSeed(listing)]);
         }
 
-        await supabase
+        const { error: listingApprovalError } = await supabase
           .from("listings")
           .update({ status: "active", approved_at: new Date().toISOString(), approval_notification_read_at: null, is_visible: true })
           .eq("id", targetId);
+        if (listingApprovalError) {
+          throw new Error(listingApprovalError.message || "Failed to approve listing.");
+        }
+
         await markAdminPriorityQueueNotificationsHandled(supabase, {
           targetType: "listing",
           targetId,

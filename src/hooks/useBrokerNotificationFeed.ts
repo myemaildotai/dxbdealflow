@@ -1,371 +1,220 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSnackbar } from "notistack";
 import {
   buildBrokerNotificationFeed,
-  countUnreadBrokerNotifications,
   type BrokerNotificationFeedItem,
+  type BrokerNotificationsPayload,
 } from "@/lib/broker-notifications";
 import { apiFetch, getCachedApiData, setCachedApiData } from "@/lib/deal-api";
-import type { BrokerDashboardData, ChatConversationSummary } from "@/lib/deal-types";
+import type { ChatConversationSummary } from "@/lib/deal-types";
+import { mergeNotificationPages } from "@/lib/notifications";
 
 type SetSessionData<T> = (value: T | null | ((current: T | null) => T | null)) => void;
 type BrokerNotificationSection = "requirements" | "enquiries";
 type ConversationsResponse = { groups: ChatConversationSummary[] };
 
+const BROKER_NOTIFICATION_PATH = "/api/dashboard/notifications";
 const CHAT_SUMMARY_TTL_MS = 60_000;
 const CHAT_CONVERSATION_CACHE_PATHS = [
   "/api/chat/conversations?limit=10&filter=recent",
   "/api/chat/conversations",
 ];
 
-const getBrokerListingHref = (listingId: string) => `/dashboard/listings/${listingId}`;
-
 export function useBrokerNotificationFeed({
-  dashboard,
+  notificationsPayload,
   onSelectSection,
-  setDashboard,
+  setNotificationsPayload,
 }: {
-  dashboard: BrokerDashboardData | null;
+  notificationsPayload: BrokerNotificationsPayload | null;
   onSelectSection?: (section: BrokerNotificationSection) => void;
-  setDashboard: SetSessionData<BrokerDashboardData>;
+  setNotificationsPayload: SetSessionData<BrokerNotificationsPayload>;
 }) {
   const router = useRouter();
   const { enqueueSnackbar } = useSnackbar();
-  const notifications = useMemo(() => (dashboard ? buildBrokerNotificationFeed(dashboard) : []), [dashboard]);
-  const unreadCount = useMemo(() => countUnreadBrokerNotifications(notifications), [notifications]);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const notifications = useMemo(
+    () => buildBrokerNotificationFeed(notificationsPayload?.notifications || []),
+    [notificationsPayload?.notifications]
+  );
+  const unreadCount = notificationsPayload?.unreadCount || 0;
+  const totalCount = notificationsPayload?.totalCount ?? notifications.length;
   const setConversationGroupsCache = useCallback(
     (updater: (groups: ChatConversationSummary[]) => ChatConversationSummary[]) => {
       CHAT_CONVERSATION_CACHE_PATHS.forEach((path) => {
         const currentPayload = getCachedApiData<ConversationsResponse>(path);
         const currentGroups = currentPayload?.groups;
-        if (!currentGroups) {
-          return;
-        }
+        if (!currentGroups) return;
 
         setCachedApiData(path, { ...currentPayload, groups: updater(currentGroups) }, {}, CHAT_SUMMARY_TTL_MS);
       });
     },
     []
   );
+  const optimisticallyMarkRead = useCallback(
+    (notification: BrokerNotificationFeedItem, readAt: string) => {
+      setNotificationsPayload((current) => {
+        if (!current) return current;
 
-  const markNotificationRead = useCallback(
-    async (notification: BrokerNotificationFeedItem) => {
-      const optimisticReadAt = new Date().toISOString();
-
-      if (notification.type === "requirement") {
-        if (notification.notification.is_read) {
-          return;
-        }
-
-        if (!notification.notification.requirement_id) {
-          enqueueSnackbar("Notification context is unavailable.", { variant: "error" });
-          return;
-        }
-
-        setDashboard((current) => {
-          if (!current) {
-            return current;
-          }
-
-          const nextNotifications = current.requirementNotifications.map((item) =>
-            item.id === notification.notification.id ? { ...item, is_read: true, read_at: optimisticReadAt } : item
-          );
-
-          return {
-            ...current,
-            requirementNotifications: nextNotifications,
-            metrics: {
-              ...current.metrics,
-              unreadRequirementNotifications: nextNotifications.filter((item) => !item.is_read).length,
-            },
-          };
-        });
-
-        try {
-          await apiFetch(`/api/requirements/${notification.notification.requirement_id}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              action: "mark_notification_read",
-              notificationId: notification.notification.id,
-            }),
-          });
-        } catch (error) {
-          setDashboard((current) => {
-            if (!current) {
-              return current;
-            }
-
-            const revertedNotifications = current.requirementNotifications.map((item) =>
-              item.id === notification.notification.id
-                ? { ...item, is_read: notification.notification.is_read, read_at: notification.notification.read_at }
-                : item
-            );
-
-            return {
-              ...current,
-              requirementNotifications: revertedNotifications,
-              metrics: {
-                ...current.metrics,
-                unreadRequirementNotifications: revertedNotifications.filter((item) => !item.is_read).length,
-              },
-            };
-          });
-
-          enqueueSnackbar(error instanceof Error ? error.message : "Failed to update notification state.", { variant: "error" });
-        }
-
-        return;
-      }
-
-      if (notification.type === "enquiry") {
-        if (notification.lead.is_read) {
-          return;
-        }
-
-        setDashboard((current) => {
-          if (!current) {
-            return current;
-          }
-
-          return {
-            ...current,
-            enquiries: current.enquiries.map((item) =>
-              item.id === notification.lead.id ? { ...item, is_read: true, read_at: optimisticReadAt } : item
-            ),
-          };
-        });
-
-        try {
-          await apiFetch(`/api/leads/${notification.lead.id}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              action: "mark_read",
-            }),
-          });
-        } catch (error) {
-          setDashboard((current) => {
-            if (!current) {
-              return current;
-            }
-
-            return {
-              ...current,
-              enquiries: current.enquiries.map((item) =>
-                item.id === notification.lead.id ? { ...item, is_read: notification.lead.is_read, read_at: notification.lead.read_at } : item
-              ),
-            };
-          });
-
-          enqueueSnackbar(error instanceof Error ? error.message : "Failed to update enquiry state.", { variant: "error" });
-        }
-
-        return;
-      }
-
-      if (notification.type === "listingApproval") {
-        if (notification.isRead) {
-          return;
-        }
-
-        setDashboard((current) => {
-          if (!current) {
-            return current;
-          }
-
-          return {
-            ...current,
-            listings: current.listings.map((item) =>
-              item.id === notification.listing.id ? { ...item, approval_notification_read_at: optimisticReadAt } : item
-            ),
-          };
-        });
-
-        try {
-          await apiFetch(`/api/listings/${notification.listing.id}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              action: "mark_approval_read",
-            }),
-          });
-        } catch (error) {
-          setDashboard((current) => {
-            if (!current) {
-              return current;
-            }
-
-            return {
-              ...current,
-              listings: current.listings.map((item) =>
-                item.id === notification.listing.id
-                  ? { ...item, approval_notification_read_at: notification.listing.approval_notification_read_at ?? null }
-                  : item
-              ),
-            };
-          });
-
-          enqueueSnackbar(error instanceof Error ? error.message : "Failed to update listing notification state.", {
-            variant: "error",
-          });
-        }
-
-        return;
-      }
-
-      if (!notification.conversation.hasUnread) {
-        return;
-      }
-
-      const nextLastReadAt = notification.conversation.lastActivityAt || optimisticReadAt;
-
-      setDashboard((current) => {
-        if (!current) {
-          return current;
-        }
-
-        const nextDashboard = {
+        return {
           ...current,
-          chats: current.chats.map((group) =>
-            group.listing.id !== notification.listing.id
-              ? group
-              : {
-                  ...group,
-                  conversations: group.conversations.map((conversation) =>
-                    conversation.conversationId !== notification.conversation.conversationId
-                      ? conversation
-                      : {
-                          ...conversation,
-                          hasUnread: false,
-                          unreadCount: 0,
-                          lastReadAt: nextLastReadAt,
-                        }
-                  ),
-                }
-          ),
-        };
-
-        return nextDashboard;
-      });
-      setConversationGroupsCache((groups) =>
-        groups.map((group) =>
-          group.listing.id !== notification.listing.id
-            ? group
-            : {
-                ...group,
-                conversations: group.conversations.map((conversation) =>
-                  conversation.conversationId !== notification.conversation.conversationId
-                    ? conversation
-                    : {
-                        ...conversation,
-                        hasUnread: false,
-                        unreadCount: 0,
-                        lastReadAt: nextLastReadAt,
-                      }
+          notifications:
+            notification.type === "chat"
+              ? current.notifications.filter((item) => item.id !== notification.id)
+              : current.notifications.map((item) =>
+                  item.id === notification.id ? { ...item, isRead: true, readAt } : item
                 ),
-              }
-        )
-      );
+          unreadCount:
+            notification.type === "chat" ? current.unreadCount : Math.max(current.unreadCount - 1, 0),
+        };
+      });
+    },
+    [setNotificationsPayload]
+  );
+  const rollbackRead = useCallback(
+    (notification: BrokerNotificationFeedItem, originalPayload: BrokerNotificationsPayload | null) => {
+      if (originalPayload) {
+        setNotificationsPayload(originalPayload);
+      }
 
-      try {
-        await apiFetch(`/api/chat/conversations/${notification.conversation.conversationId}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            action: "mark_read",
-            readUntilSequence: notification.conversation.lastMessage?.message_sequence ?? notification.conversation.lastMessageSequence ?? null,
-            readAt: nextLastReadAt,
-          }),
-        });
-      } catch (error) {
-        setDashboard((current) => {
-          if (!current) {
-            return current;
-          }
-
-          return {
-            ...current,
-            chats: current.chats.map((group) =>
-              group.listing.id !== notification.listing.id
-                ? group
-                : {
-                    ...group,
-                    conversations: group.conversations.map((conversation) =>
-                      conversation.conversationId !== notification.conversation.conversationId
-                        ? conversation
-                        : {
-                            ...conversation,
-                            hasUnread: notification.conversation.hasUnread,
-                            unreadCount: notification.conversation.unreadCount,
-                            lastReadAt: notification.conversation.lastReadAt,
-                          }
-                    ),
-                  }
-            ),
-          };
-        });
+      if (notification.type === "chat") {
         setConversationGroupsCache((groups) =>
           groups.map((group) =>
-            group.listing.id !== notification.listing.id
+            group.listing.id !== notification.source.listingId
               ? group
               : {
                   ...group,
                   conversations: group.conversations.map((conversation) =>
-                    conversation.conversationId !== notification.conversation.conversationId
+                    conversation.conversationId !== notification.source.conversationId
                       ? conversation
                       : {
                           ...conversation,
-                          hasUnread: notification.conversation.hasUnread,
-                          unreadCount: notification.conversation.unreadCount,
-                          lastReadAt: notification.conversation.lastReadAt,
+                          hasUnread: true,
+                          unreadCount: notification.unreadCount,
+                          lastReadAt: notification.source.lastReadAt,
                         }
                   ),
                 }
           )
         );
-
-        enqueueSnackbar(error instanceof Error ? error.message : "Failed to update chat state.", { variant: "error" });
       }
     },
-    [enqueueSnackbar, setConversationGroupsCache, setDashboard]
+    [setConversationGroupsCache, setNotificationsPayload]
   );
+
+  const markNotificationRead = useCallback(
+    async (notification: BrokerNotificationFeedItem) => {
+      if (notification.isRead) return;
+
+      const originalPayload = notificationsPayload;
+      const optimisticReadAt = new Date().toISOString();
+      optimisticallyMarkRead(notification, optimisticReadAt);
+
+      try {
+        if (notification.type === "enquiry") {
+          await apiFetch(`/api/leads/${notification.source.leadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ action: "mark_read" }),
+          });
+        } else if (notification.type === "listingApproval") {
+          await apiFetch(`/api/listings/${notification.source.listingId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ action: "mark_approval_read" }),
+          });
+        } else if (notification.type === "chat") {
+          const nextLastReadAt = notification.createdAt || optimisticReadAt;
+          setConversationGroupsCache((groups) =>
+            groups.map((group) =>
+              group.listing.id !== notification.source.listingId
+                ? group
+                : {
+                    ...group,
+                    conversations: group.conversations.map((conversation) =>
+                      conversation.conversationId !== notification.source.conversationId
+                        ? conversation
+                        : {
+                            ...conversation,
+                            hasUnread: false,
+                            unreadCount: 0,
+                            lastReadAt: nextLastReadAt,
+                          }
+                    ),
+                  }
+            )
+          );
+          await apiFetch(`/api/chat/conversations/${notification.source.conversationId}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              action: "mark_read",
+              readUntilSequence: notification.source.lastMessageSequence,
+              readAt: nextLastReadAt,
+            }),
+          });
+        }
+
+        await apiFetch(`${BROKER_NOTIFICATION_PATH}/${notification.id}`, { method: "PATCH" });
+      } catch (error) {
+        rollbackRead(notification, originalPayload);
+        enqueueSnackbar(error instanceof Error ? error.message : "Failed to update notification state.", {
+          variant: "error",
+        });
+      }
+    },
+    [
+      enqueueSnackbar,
+      notificationsPayload,
+      optimisticallyMarkRead,
+      rollbackRead,
+      setConversationGroupsCache,
+    ]
+  );
+
+  const loadMore = useCallback(async () => {
+    const cursor = notificationsPayload?.nextCursor;
+    if (!cursor || !notificationsPayload?.hasMore || isLoadingMore) return;
+
+    setIsLoadingMore(true);
+    try {
+      const nextPage = await apiFetch<BrokerNotificationsPayload>(
+        `${BROKER_NOTIFICATION_PATH}?limit=15&cursor=${encodeURIComponent(cursor)}`
+      );
+      setNotificationsPayload((current) => (current ? mergeNotificationPages(current, nextPage) : nextPage));
+    } catch (error) {
+      enqueueSnackbar(error instanceof Error ? error.message : "Failed to load more notifications.", {
+        variant: "error",
+      });
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [enqueueSnackbar, isLoadingMore, notificationsPayload, setNotificationsPayload]);
 
   const openNotificationPrimaryAction = useCallback(
     async (notification: BrokerNotificationFeedItem) => {
-      if (notification.type === "requirement") {
-        if (onSelectSection) {
-          onSelectSection("requirements");
-        } else {
-          router.push("/dashboard?section=requirements", { scroll: false });
-        }
-
+      if (notification.type === "requirement" && onSelectSection) {
+        onSelectSection("requirements");
         return;
       }
 
-      if (notification.type === "enquiry") {
-        if (onSelectSection) {
-          onSelectSection("enquiries");
-        } else {
-          router.push("/dashboard?section=enquiries", { scroll: false });
-        }
-
+      if (notification.type === "enquiry" && onSelectSection) {
+        onSelectSection("enquiries");
         return;
       }
 
-      if (notification.type === "listingApproval") {
-        router.push(getBrokerListingHref(notification.listing.id));
-        return;
-      }
-
-      router.push(`/dashboard/chats/${notification.conversation.conversationId}`);
+      router.push(notification.href, { scroll: false });
     },
     [onSelectSection, router]
   );
 
   return {
+    hasMore: notificationsPayload?.hasMore || false,
+    isLoadingMore,
+    loadMore,
     markNotificationRead,
     notifications,
     openNotificationPrimaryAction,
+    totalCount,
     unreadCount,
   };
 }

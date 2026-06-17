@@ -38,6 +38,8 @@ export function useSessionQuery<T>(
   const queryFnRef = useRef(queryFn);
   const onErrorRef = useRef(onError);
   const keepPreviousDataRef = useRef(keepPreviousData);
+  const enabledRef = useRef(enabled);
+  const mountedRef = useRef(false);
   const [stateKey, setStateKey] = useState(key);
   const [data, setDataState] = useState<T | null>(() => initialData ?? getSessionResource<T>(key));
   const [error, setError] = useState<unknown>(null);
@@ -50,6 +52,15 @@ export function useSessionQuery<T>(
   if (keyRef.current !== key) {
     keyRef.current = key;
   }
+  enabledRef.current = enabled;
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     queryFnRef.current = queryFn;
@@ -149,23 +160,30 @@ export function useSessionQuery<T>(
 
       setLoading(true);
       const requestGeneration = getSessionResourceGeneration();
+      const isCurrentRequest = () =>
+        mountedRef.current &&
+        enabledRef.current &&
+        keyRef.current === key &&
+        requestGeneration === getSessionResourceGeneration();
 
       try {
         const result = await fetchSessionResource(key, () => queryFnRef.current(), { force, ttlMs });
-        if (keyRef.current === key && requestGeneration === getSessionResourceGeneration()) {
+        if (isCurrentRequest()) {
           setDataState(result);
           dataRef.current = result;
           setError(null);
         }
         return result;
       } catch (requestError) {
-        if (keyRef.current === key) {
-          setError(requestError);
+        if (!isCurrentRequest()) {
+          return null;
         }
+
+        setError(requestError);
         onErrorRef.current?.(requestError);
         return null;
       } finally {
-        if (keyRef.current === key) {
+        if (isCurrentRequest()) {
           setLoading(false);
         }
       }

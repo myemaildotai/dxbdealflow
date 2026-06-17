@@ -20,17 +20,21 @@ import {
 import { useClientPagination } from "@/hooks/useClientPagination";
 import {
   getImmediateBrokerChatHref,
-  prefetchBrokerChatNavigation,
   warmBrokerChatPayload,
 } from "@/lib/chat-navigation";
 import { apiFetch } from "@/lib/deal-api";
 import { invalidateRequirementCaches } from "@/lib/client-cache";
-import type { ChatConversationSummary, Requirement, RequirementMatch } from "@/lib/deal-types";
+import type { BrokerChatNavigationSummary, Requirement, RequirementMatch } from "@/lib/deal-types";
 import { cn, formatCurrency, formatDate, formatDateTime, formatDealType, formatPropertyType, formatRequirementUrgency } from "@/lib/deal-utils";
 import { formatRequirementBedrooms, getRequirementStatus } from "@/lib/requirements";
 
 type RequirementStatusFilterId = "all" | "active" | "inactive" | "closed";
 type RequirementSortId = "newest" | "oldest" | "budget_high" | "submissions_high";
+type RequirementStatusAction = "activate" | "deactivate";
+type PendingRequirementStatusAction = {
+  action: RequirementStatusAction;
+  requirement: Requirement;
+};
 
 type RequirementMatchesResponse = {
   submittedMatches: RequirementMatch[];
@@ -179,6 +183,63 @@ function getRequirementSearchText(requirement: Requirement) {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+function RequirementStatusConfirmationDialog({
+  action,
+  loading,
+  onClose,
+  onConfirm,
+}: {
+  action: RequirementStatusAction;
+  loading: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const isActivating = action === "activate";
+  const closeIfIdle = () => {
+    if (!loading) {
+      onClose();
+    }
+  };
+
+  return (
+    <RequirementModalShell onClose={closeIfIdle} maxWidthClassName="max-w-lg">
+      <div className="p-3 sm:p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.3em] text-brand-orange">Confirm Requirement Action</p>
+            <h3 className="mt-2 text-2xl font-semibold text-brand-navy">
+              {isActivating ? "Activate requirement?" : "Deactivate requirement?"}
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-brand-slate">
+              {isActivating
+                ? "This requirement will become active and visible again."
+                : "This requirement will be deactivated and hidden from active requirement views."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={closeIfIdle}
+            className="modal-close-button"
+            disabled={loading}
+            aria-label="Close confirmation"
+          >
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+
+        <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
+          <button type="button" className="btn-primary" onClick={onConfirm} disabled={loading}>
+            {loading ? "Saving..." : isActivating ? "Activate" : "Deactivate"}
+          </button>
+        </div>
+      </div>
+    </RequirementModalShell>
+  );
 }
 
 function formatRelativeTime(value: string | null | undefined) {
@@ -923,7 +984,7 @@ export function BrokerRequirementsWorkspace({
   requirements,
   onRefresh,
 }: {
-  chatGroups: ChatConversationSummary[];
+  chatGroups: BrokerChatNavigationSummary[];
   requirements: Requirement[];
   onRefresh: () => Promise<unknown>;
 }) {
@@ -933,6 +994,7 @@ export function BrokerRequirementsWorkspace({
   const [statusFilter, setStatusFilter] = useState<RequirementStatusFilterId>("all");
   const [sortBy, setSortBy] = useState<RequirementSortId>("newest");
   const [actionKey, setActionKey] = useState<string | null>(null);
+  const [pendingStatusAction, setPendingStatusAction] = useState<PendingRequirementStatusAction | null>(null);
   const [pendingDeleteRequirement, setPendingDeleteRequirement] = useState<Requirement | null>(null);
   const [matchesRequirement, setMatchesRequirement] = useState<Requirement | null>(null);
   const [detailsRequirement, setDetailsRequirement] = useState<Requirement | null>(null);
@@ -941,7 +1003,7 @@ export function BrokerRequirementsWorkspace({
   const [selectedSubmission, setSelectedSubmission] = useState<RequirementMatch | null>(null);
   const [openToolbarMenuId, setOpenToolbarMenuId] = useState<"filter" | "sort" | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
-  const prefetchedChatKeysRef = useRef(new Set<string>());
+  const statusActionPendingRef = useRef(false);
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
 
   const filteredRequirements = useMemo(() => {
@@ -990,6 +1052,12 @@ export function BrokerRequirementsWorkspace({
 
   const resolvedMatchesRequirement = matchesRequirement ? requirements.find((requirement) => requirement.id === matchesRequirement.id) || matchesRequirement : null;
   const resolvedDetailsRequirement = detailsRequirement ? requirements.find((requirement) => requirement.id === detailsRequirement.id) || detailsRequirement : null;
+  const resolvedPendingStatusAction = pendingStatusAction
+    ? {
+        action: pendingStatusAction.action,
+        requirement: requirements.find((requirement) => requirement.id === pendingStatusAction.requirement.id) || pendingStatusAction.requirement,
+      }
+    : null;
   const {
     paginatedItems: paginatedRequirements,
     pagination,
@@ -1030,7 +1098,12 @@ export function BrokerRequirementsWorkspace({
     }
   };
 
-  const toggleRequirement = async (requirement: Requirement, nextAction: "activate" | "deactivate") => {
+  const toggleRequirement = async (requirement: Requirement, nextAction: RequirementStatusAction) => {
+    if (statusActionPendingRef.current) {
+      return;
+    }
+
+    statusActionPendingRef.current = true;
     const key = `requirement:${requirement.id}:${nextAction}`;
     setActionKey(key);
 
@@ -1040,10 +1113,12 @@ export function BrokerRequirementsWorkspace({
         body: JSON.stringify({ action: nextAction }),
       });
       await refreshWorkspace();
+      setPendingStatusAction(null);
       enqueueSnackbar(nextAction === "deactivate" ? "Requirement deactivated." : "Requirement activated.", { variant: "success" });
     } catch (error) {
       enqueueSnackbar(error instanceof Error ? error.message : "Failed to update requirement.", { variant: "error" });
     } finally {
+      statusActionPendingRef.current = false;
       setActionKey(null);
     }
   };
@@ -1089,36 +1164,6 @@ export function BrokerRequirementsWorkspace({
       setMatchesLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (!resolvedMatchesRequirement || matchesLoading || !submittedMatches.length) {
-      return;
-    }
-
-    submittedMatches.forEach((submission) => {
-      if (!submission.listing_id) {
-        return;
-      }
-
-      const prefetchKey = `${submission.id}:${submission.listing_id}:${submission.requirement_id}`;
-      if (prefetchedChatKeysRef.current.has(prefetchKey)) {
-        return;
-      }
-
-      prefetchedChatKeysRef.current.add(prefetchKey);
-
-      void prefetchBrokerChatNavigation(submission.listing_id, {
-        chatGroups,
-        context: {
-          requirementId: submission.requirement_id,
-          matchId: submission.id,
-        },
-        prefetchRoute: (href) => router.prefetch(href),
-      }).catch(() => {
-        prefetchedChatKeysRef.current.delete(prefetchKey);
-      });
-    });
-  }, [chatGroups, matchesLoading, resolvedMatchesRequirement, router, submittedMatches]);
 
   const openSubmission = async (submission: RequirementMatch) => {
     const nextSubmission = submission.status === "new" ? { ...submission, status: "read" as const } : submission;
@@ -1285,7 +1330,7 @@ export function BrokerRequirementsWorkspace({
                       setOpenActionMenuId(null);
                       setDetailsRequirement(requirement);
                     }}
-                    onToggleRequirement={(nextAction) => void toggleRequirement(requirement, nextAction)}
+                    onToggleRequirement={(nextAction) => setPendingStatusAction({ action: nextAction, requirement })}
                     onDeleteRequirement={() => {
                       setOpenActionMenuId(null);
                       setPendingDeleteRequirement(requirement);
@@ -1323,6 +1368,15 @@ export function BrokerRequirementsWorkspace({
           loading={actionKey === `requirement:${pendingDeleteRequirement.id}:delete`}
           onClose={() => setPendingDeleteRequirement(null)}
           onConfirm={() => void deleteRequirement()}
+        />
+      ) : null}
+
+      {resolvedPendingStatusAction ? (
+        <RequirementStatusConfirmationDialog
+          action={resolvedPendingStatusAction.action}
+          loading={actionKey === `requirement:${resolvedPendingStatusAction.requirement.id}:${resolvedPendingStatusAction.action}`}
+          onClose={() => setPendingStatusAction(null)}
+          onConfirm={() => void toggleRequirement(resolvedPendingStatusAction.requirement, resolvedPendingStatusAction.action)}
         />
       ) : null}
 

@@ -53,6 +53,7 @@ import {
 } from "@/components/browse-listings/browse-listings-utils";
 import { getRequirementMatchedListings, isListingMatchingRequirement } from "@/lib/requirement-matching";
 import { hydrateListings } from "@/lib/platform-server-data";
+import { fetchHydratedRequirementMatchCandidateListings } from "@/lib/requirements-server";
 
 type PublicEnquiryEmail = {
   brokerName: string;
@@ -653,16 +654,15 @@ export async function triggerRequirementMatchFoundForRequirement(data: { require
     return null;
   }
 
-  const [owner, activeListings] = await Promise.all([
-    resolveRequirementOwner(supabase, requirement),
-    fetchActiveListings(supabase),
-  ]);
+  const owner = await resolveRequirementOwner(supabase, requirement);
 
   if (!owner) {
     return null;
   }
 
-  const eligibleListings = activeListings.filter((listing) => listing.created_by !== owner.id);
+  const eligibleListings = await fetchHydratedRequirementMatchCandidateListings(supabase, {
+    excludeUserId: owner.id,
+  });
   const matchedListings = getRequirementMatchedListings(requirement, eligibleListings).map((match) => match.listing);
 
   if (!matchedListings.length) {
