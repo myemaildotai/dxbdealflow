@@ -15,9 +15,17 @@ import {
   parseNumber,
 } from "@/lib/deal-utils";
 import type { Listing, ListingDocument, PlatformUser } from "@/lib/deal-types";
-import { getListingDocumentValidationError } from "@/lib/document-upload";
+import {
+  LISTING_DOCUMENT_DUPLICATE_FILENAME_MESSAGE,
+  getListingDocumentMetadataValidationError,
+  normalizeListingDocumentFileName,
+  parseListingDocumentMetadata,
+  parseListingDocumentMetadataPayload,
+  type UploadedListingDocumentMetadata,
+} from "@/lib/document-upload";
 import { getHandoverDateValidationMessage } from "@/lib/handover-date";
 import { getImageUploadValidationError } from "@/lib/image-upload";
+import { saveUploadedListingDocuments } from "@/lib/listing-documents-server";
 import { normalizeListingMediaUrl } from "@/lib/listing-media";
 
 const MIN_LISTING_IMAGES = 1;
@@ -281,41 +289,6 @@ async function uploadListingImages(
   return uploadedImageIds;
 }
 
-async function uploadListingDocuments(
-  supabase: ReturnType<typeof getServiceSupabase>,
-  listingId: string,
-  userId: string,
-  files: File[]
-) {
-  for (const file of files) {
-    const validationError = getListingDocumentValidationError(file);
-    if (validationError) {
-      throw new Error(validationError);
-    }
-
-    const path = `${userId}/${listingId}/${Date.now()}-${file.name}`;
-    const { error: uploadError } = await supabase.storage.from("listing-documents").upload(path, file, {
-      upsert: false,
-    });
-
-    if (uploadError) {
-      throw new Error(uploadError.message || "Failed to upload document.");
-    }
-
-    const { data: publicUrl } = supabase.storage.from("listing-documents").getPublicUrl(path);
-    const { error: documentError } = await supabase.from("listing_documents").insert({
-      listing_id: listingId,
-      file_name: file.name,
-      storage_path: path,
-      public_url: publicUrl.publicUrl,
-    });
-
-    if (documentError) {
-      throw new Error(documentError.message || "Failed to save document.");
-    }
-  }
-}
-
 async function removeListingImage(
   supabase: ReturnType<typeof getServiceSupabase>,
   listingId: string,
@@ -522,13 +495,13 @@ function buildListingActivityChangedFields(
 }
 
 function buildListingAssetActivityChangedFields({
-  documentFiles,
+  documentCount,
   existingImageIds,
   imageFiles,
   imageOrder,
   normalizedRemoveImageIds,
 }: {
-  documentFiles: File[];
+  documentCount: number;
   existingImageIds: string[];
   imageFiles: File[];
   imageOrder: string[];
@@ -565,11 +538,11 @@ function buildListingAssetActivityChangedFields({
     });
   }
 
-  if (documentFiles.length) {
+  if (documentCount) {
     changedFields.push({
       field: "listing_documents",
       previousValue: null,
-      nextValue: `${documentFiles.length} document${documentFiles.length === 1 ? "" : "s"} added`,
+      nextValue: `${documentCount} document${documentCount === 1 ? "" : "s"} added`,
     });
   }
 
@@ -910,7 +883,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   const contentType = request.headers.get("content-type") || "";
   let payload: ReturnType<typeof buildListingPayload>;
   let imageFiles: File[] = [];
-  let documentFiles: File[] = [];
+  let documents: UploadedListingDocumentMetadata[] = [];
   let imageOrder: string[] = [];
   let removeImageIds: string[] = [];
   let commissionTerms: { coBrokePercent?: string; paymentTerms?: string; notes?: string } | null = null;
@@ -936,9 +909,11 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     imageFiles = formData
       .getAll("images")
       .filter((entry): entry is File => entry instanceof File && entry.size > 0);
-    documentFiles = formData
-      .getAll("documents")
-      .filter((entry): entry is File => entry instanceof File && entry.size > 0);
+    try {
+      documents = parseListingDocumentMetadata(formData);
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : "Document metadata is invalid.", 400);
+    }
     imageOrder = parseImageOrder(formData.get("imageOrder"));
     removeImageIds = parseStringArray(formData.get("removeImageIds"));
     commissionTerms = {
@@ -949,6 +924,11 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   } else {
     const body = await request.json();
     payload = buildListingPayload(body);
+    try {
+      documents = parseListingDocumentMetadataPayload(body.documents ?? body.documentMetadata);
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : "Document metadata is invalid.", 400);
+    }
     imageOrder = parseImageOrder(body.imageOrder);
     removeImageIds = parseStringArray(body.removeImageIds);
     commissionTerms = body.commissionTerms || null;
@@ -978,7 +958,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   const listingChangedFields = [
     ...buildListingActivityChangedFields(existing as ListingActivitySource, payload),
     ...buildListingAssetActivityChangedFields({
-      documentFiles,
+      documentCount: documents.length,
       existingImageIds,
       imageFiles,
       imageOrder,
@@ -1005,10 +985,37 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     return jsonError(imageValidationError, 400);
   }
 
-  for (const document of documentFiles) {
-    const documentValidationError = getListingDocumentValidationError(document);
+  for (const document of documents) {
+    const documentValidationError = getListingDocumentMetadataValidationError(document, auth.user.id);
+
     if (documentValidationError) {
       return jsonError(documentValidationError, 400);
+    }
+  }
+
+  if (documents.length) {
+    const existingDocumentsResult = await supabase
+      .from("listing_documents")
+      .select("file_name")
+      .eq("listing_id", params.id);
+
+    if (existingDocumentsResult.error) {
+      return jsonError(existingDocumentsResult.error.message || "Failed to validate listing documents.", 500);
+    }
+
+    const knownFileNames = new Set(
+      (existingDocumentsResult.data || []).map((document) =>
+        normalizeListingDocumentFileName(document.file_name)
+      )
+    );
+
+    for (const document of documents) {
+      const normalizedFileName = normalizeListingDocumentFileName(document.file_name);
+      if (knownFileNames.has(normalizedFileName)) {
+        return jsonError(LISTING_DOCUMENT_DUPLICATE_FILENAME_MESSAGE, 409);
+      }
+
+      knownFileNames.add(normalizedFileName);
     }
   }
 
@@ -1039,9 +1046,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
       uploadedImageIds = await uploadListingImages(supabase, params.id, auth.user.id, imageFiles);
     }
 
-    if (documentFiles.length) {
-      await uploadListingDocuments(supabase, params.id, auth.user.id, documentFiles);
-    }
+    await saveUploadedListingDocuments(supabase, params.id, documents);
 
     if (normalizedRemoveImageIds.length) {
       await removeListingImages(supabase, params.id, normalizedRemoveImageIds);

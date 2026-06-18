@@ -1862,7 +1862,7 @@ export function profileCompletionReminderTemplate(params: { brokerName: string; 
 export function brokerEmailVerificationOtpTemplate(params: {
   brokerName: string;
   otp: string;
-  expiresAt: string;
+  validityText: string;
   verifyUrl?: string | null;
 }) {
   const subject = "Verify your email";
@@ -1874,14 +1874,14 @@ export function brokerEmailVerificationOtpTemplate(params: {
         <td class="otp-card-cell" align="center" style="padding:24px 18px;">
           <p style="margin:0;color:${MUTED};${LABEL_TEXT_STYLE}font-size:11px;line-height:16px;text-transform:uppercase;letter-spacing:0.16em;">Verification code</p>
           <p class="otp-code" style="margin:10px 0 0;color:${NAVY};${HEADING_TEXT_STYLE}font-size:34px;line-height:40px;letter-spacing:0.16em;">${escapeHtml(params.otp)}</p>
-          <p style="margin:12px 0 0;color:${MUTED};${BODY_TEXT_STYLE}font-size:13px;line-height:20px;">Expires at ${escapeHtml(params.expiresAt)}.</p>
+          <p style="margin:12px 0 0;color:${MUTED};${BODY_TEXT_STYLE}font-size:13px;line-height:20px;">${escapeHtml(params.validityText)}</p>
         </td>
       </tr>
     </table>`;
 
   return {
     subject,
-    text: textTemplate(title, [subtitle, `OTP code: ${params.otp}`, `Expires at: ${params.expiresAt}`, params.verifyUrl ? `Verify Email: ${params.verifyUrl}` : ""]),
+    text: textTemplate(title, [subtitle, `OTP code: ${params.otp}`, params.validityText, params.verifyUrl ? `Verify Email: ${params.verifyUrl}` : ""]),
     html: renderLayout({
       title,
       subtitle,

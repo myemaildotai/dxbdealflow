@@ -22,9 +22,24 @@ export const LISTING_DOCUMENT_UPLOAD_CONFIG = {
   },
 } as const;
 
+export const LISTING_DOCUMENT_BUCKET = "listing-documents";
+export const LISTING_DOCUMENT_DUPLICATE_FILENAME_MESSAGE =
+  "A document with this filename is already attached or selected.";
+
+export type UploadedListingDocumentMetadata = {
+  storage_path: string;
+  file_name: string;
+  mime_type: string;
+  size: number;
+};
+
 type ListingDocumentFamily = Omit<typeof LISTING_DOCUMENT_UPLOAD_CONFIG, "maxSize">;
 type ListingDocumentFamilyKey = keyof ListingDocumentFamily;
 type ListingDocumentFileLike = Pick<File, "name" | "size" | "type">;
+
+export function normalizeListingDocumentFileName(fileName: string) {
+  return fileName.trim().normalize("NFKC").toLowerCase();
+}
 
 function getEnabledDocumentFamilies() {
   return (Object.keys(LISTING_DOCUMENT_UPLOAD_CONFIG) as Array<keyof typeof LISTING_DOCUMENT_UPLOAD_CONFIG>)
@@ -130,4 +145,102 @@ export function getListingDocumentValidationError(file?: ListingDocumentFileLike
 
 export function isSupportedListingDocument(file: ListingDocumentFileLike) {
   return getListingDocumentValidationError(file) === null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getStringField(source: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = source[key];
+
+    if (typeof value === "string") {
+      return value.trim();
+    }
+  }
+
+  return "";
+}
+
+function getNumberField(source: Record<string, unknown>, key: string) {
+  const value = source[key];
+  const parsedValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+
+  return Number.isFinite(parsedValue) ? parsedValue : NaN;
+}
+
+function parseListingDocumentMetadataEntry(entry: unknown): UploadedListingDocumentMetadata {
+  if (!isRecord(entry)) {
+    throw new Error("Document metadata is invalid.");
+  }
+
+  const storagePath = getStringField(entry, "storage_path", "storagePath");
+  const fileName = getStringField(entry, "file_name", "fileName", "original_filename", "originalFilename");
+  const mimeType = getStringField(entry, "mime_type", "mimeType");
+  const size = getNumberField(entry, "size");
+
+  if (!storagePath || !fileName || !Number.isFinite(size) || size <= 0) {
+    throw new Error("Document metadata is invalid.");
+  }
+
+  return {
+    storage_path: storagePath,
+    file_name: fileName,
+    mime_type: mimeType,
+    size,
+  };
+}
+
+export function parseListingDocumentMetadataPayload(payload: unknown) {
+  if (payload === null || payload === undefined || payload === "") {
+    return [];
+  }
+
+  let parsedPayload = payload;
+
+  if (typeof payload === "string") {
+    try {
+      parsedPayload = JSON.parse(payload);
+    } catch {
+      throw new Error("Document metadata is invalid.");
+    }
+  }
+
+  if (!Array.isArray(parsedPayload)) {
+    throw new Error("Document metadata is invalid.");
+  }
+
+  return parsedPayload.map(parseListingDocumentMetadataEntry);
+}
+
+export function parseListingDocumentMetadata(formData: FormData) {
+  const documentEntries = formData.getAll("documents");
+
+  if (documentEntries.some((entry) => entry instanceof File)) {
+    throw new Error("Document files must be uploaded before saving the listing.");
+  }
+
+  return parseListingDocumentMetadataPayload(documentEntries[0] || formData.get("documentMetadata"));
+}
+
+export function getListingDocumentMetadataValidationError(
+  document: UploadedListingDocumentMetadata,
+  userId: string
+) {
+  const expectedPrefix = `${userId}/pending/`;
+
+  if (
+    !document.storage_path.startsWith(expectedPrefix) ||
+    document.storage_path.includes("..") ||
+    document.storage_path.includes("\\")
+  ) {
+    return "Uploaded document path is invalid.";
+  }
+
+  return getListingDocumentValidationError({
+    name: document.file_name,
+    size: document.size,
+    type: document.mime_type,
+  });
 }

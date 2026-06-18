@@ -19,6 +19,7 @@ import {
   getNewDealAlertAvailableAt,
   getNewDealAlertCooldownState,
 } from "@/lib/email-alert-config";
+import { BROKER_EMAIL_OTP_TTL_MINUTES } from "@/lib/broker-email-verification";
 import {
   buildEmailAssetUrl,
   brokerEmailVerificationOtpTemplate,
@@ -988,7 +989,7 @@ export async function sendBrokerEmailVerificationOtp(data: BrokerEmailOtpEmail):
     template: brokerEmailVerificationOtpTemplate({
       brokerName: data.brokerName,
       otp: data.otp,
-      expiresAt: formatDateTime(data.expiresAt),
+      validityText: `Valid for ${BROKER_EMAIL_OTP_TTL_MINUTES} minutes.`,
     }),
     eventKey: `broker_email_verification_otp:${data.brokerEmail.toLowerCase()}:${data.expiresAt}`,
     metadata: {
