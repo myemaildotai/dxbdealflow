@@ -74,10 +74,10 @@ export function buildBrokerOverview(dashboard: BrokerDashboardData): BrokerOverv
     (groupTotal, group) => groupTotal + group.conversations.reduce((conversationTotal, conversation) => conversationTotal + conversation.messageCount, 0),
     0
   );
-  const pendingListings = listings.filter((listing) => listing.status === "pending").length;
-  const attentionListings = listings.filter((listing) => ATTENTION_STATUSES.has(listing.status)).length;
-  const newEnquiries = enquiries.filter((enquiry) => enquiry.lead_status === "new").length;
-  const listingsWithChats = listings.filter((listing) => chatListingIdSet.has(listing.id)).length;
+  const pendingListings = dashboard.metrics.pendingListings ?? listings.filter((listing) => listing.status === "pending").length;
+  const attentionListings = dashboard.metrics.attentionListings ?? listings.filter((listing) => ATTENTION_STATUSES.has(listing.status)).length;
+  const newEnquiries = dashboard.metrics.newEnquiries ?? enquiries.filter((enquiry) => enquiry.lead_status === "new").length;
+  const listingsWithChats = dashboard.metrics.listingsWithChats ?? listings.filter((listing) => chatListingIdSet.has(listing.id)).length;
   const assignedCredits = dashboard.credits?.total_credits_assigned || 0;
   const usedCredits = dashboard.credits?.used_credits || 0;
   const availableCredits = dashboard.credits?.available_credits || 0;
@@ -198,7 +198,7 @@ export function buildBrokerOverview(dashboard: BrokerDashboardData): BrokerOverv
       usagePercent,
     },
     activity: {
-      openChats: chats.length,
+      openChats: dashboard.metrics.activeChats ?? chats.length,
       totalMessages,
       listingsWithChats,
       pendingListings,

@@ -1,16 +1,16 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { FormEvent, ReactNode, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/auth/useAuth";
+import { IntentPrefetchLink as Link } from "@/components/IntentPrefetchLink";
 import { PublicHeader } from "@/components/PublicHeader";
 import { useSessionQuery } from "@/hooks/useSessionQuery";
 import { apiFetch, getApiCacheKey } from "@/lib/deal-api";
 import { propertyTypeOptions } from "@/lib/deal-constants";
 import { cn, formatPropertyType } from "@/lib/deal-utils";
-import { Area, PropertyType, PublicOverview } from "@/lib/deal-types";
+import { Area, PropertyType } from "@/lib/deal-types";
 import {
   getListingBedroomLabel,
   getListingBedroomOptions,
@@ -19,12 +19,7 @@ import {
 } from "@/lib/listing-bedrooms";
 import { getDefaultRouteForUser, isPendingBroker } from "@/lib/route-access";
 
-const fallbackOverview: PublicOverview = {
-  activeBrokerCount: 0,
-  activeListingCount: 0,
-  recentListings: [],
-  areas: [],
-};
+const fallbackAreas: Area[] = [];
 
 const bedroomOptions = [{ value: "", label: "Any Beds" }, ...getListingBedroomOptions()];
 
@@ -407,19 +402,19 @@ function HeroSelect({
 export default function HomePage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
-  const { data, loading } = useSessionQuery<PublicOverview>(
-    getApiCacheKey("/api/public/overview"),
-    () => apiFetch<PublicOverview>("/api/public/overview"),
-    { ttlMs: 45_000 },
+  const { data } = useSessionQuery<{ areas: Area[] }>(
+    getApiCacheKey("/api/public/areas"),
+    () => apiFetch<{ areas: Area[] }>("/api/public/areas"),
+    { ttlMs: 300_000 },
   );
   const [searchValue, setSearchValue] = useState("");
   const [propertyType, setPropertyType] = useState<PropertyType | "">("");
   const [bedrooms, setBedrooms] = useState("");
 
-  const overview = data ?? fallbackOverview;
+  const areas = data?.areas ?? fallbackAreas;
   const matchedArea = useMemo(
-    () => resolveAreaMatch(searchValue, overview.areas),
-    [overview.areas, searchValue],
+    () => resolveAreaMatch(searchValue, areas),
+    [areas, searchValue],
   );
   const secondaryCta = useMemo(() => {
     if (authLoading) {
@@ -476,9 +471,6 @@ export default function HomePage() {
     const query = params.toString();
     router.push(query ? `/listings?${query}` : "/listings");
   };
-
-  const statValue = (value: number) =>
-    loading && data === null ? "..." : value.toLocaleString("en-US");
 
   return (
     <div className={cn("flex min-h-screen flex-col bg-brand-bg text-white")}>
@@ -632,11 +624,7 @@ export default function HomePage() {
                   </button>
                 </form>
 
-                <div
-                  className="mt-5 grid gap-4 border-t border-white/10 pt-5 md:grid-cols-3 md:gap-0 md:divide-x md:divide-white/10"
-                  data-active-listings={statValue(overview.activeListingCount)}
-                  data-active-brokers={statValue(overview.activeBrokerCount)}
-                >
+                <div className="mt-5 grid gap-4 border-t border-white/10 pt-5 md:grid-cols-3 md:gap-0 md:divide-x md:divide-white/10">
                   <div className="flex items-center gap-4 md:px-6 md:first:pl-0 md:last:pr-0">
                     <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-white/10 text-[#E7C96F] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
                       <ShieldCheckIcon className="h-6 w-6" />

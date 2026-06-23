@@ -1,7 +1,8 @@
+import { revalidateTag } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { getComingSoonModeState, setComingSoonModeState } from "@/lib/coming-soon";
 import { getServiceSupabase, jsonError, requireAdmin, withNoStore } from "@/lib/deal-server";
-import { clearSiteModeStateCache } from "@/lib/site-mode-state";
+import { clearSiteModeStateCache, SITE_MODE_STATE_CACHE_TAG } from "@/lib/site-mode-state";
 
 export async function GET(request: NextRequest) {
   const auth = await requireAdmin(request);
@@ -30,6 +31,7 @@ export async function PUT(request: NextRequest) {
     const supabase = getServiceSupabase();
     const state = await setComingSoonModeState(supabase, body.enabled, auth.user.id);
     clearSiteModeStateCache();
+    revalidateTag(SITE_MODE_STATE_CACHE_TAG);
 
     await supabase.from("activity_log").insert({
       actor_user_id: auth.user.id,

@@ -5,10 +5,9 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import { AdminBlankState, AdminStatusBadge } from "@/app/admin/_components/AdminPanelUi";
 import { BrokerAvatar } from "@/components/BrokerAvatar";
 import { apiFetch } from "@/lib/deal-api";
-import type { AdminChatMessageCursor, AdminChatMessagesPage, AdminOverview, ChatMessage } from "@/lib/deal-types";
+import type { AdminChatGroup, AdminChatMessageCursor, AdminChatMessagesPage, ChatMessage } from "@/lib/deal-types";
 import { cn, formatCurrency, formatDateTime, formatListingDisplayStatus, getMailtoLink } from "@/lib/deal-utils";
 
-type AdminChatGroup = AdminOverview["chats"][number];
 type AdminChatConversation = AdminChatGroup["conversations"][number];
 type AdminChatFilterId = "recent" | "unread" | "all";
 type AdminChatMobilePane = "listings" | "conversations" | "messages";

@@ -73,6 +73,18 @@ export type BrowseListingRecord = Listing & {
   is_best_deal?: boolean | null;
 };
 
+export type ListingComparableRecord = Pick<
+  Listing,
+  | "id"
+  | "area_id"
+  | "bedrooms"
+  | "deleted_at"
+  | "is_visible"
+  | "price"
+  | "property_type"
+  | "status"
+>;
+
 export type ListingIntel = {
   listing: Listing;
   marketAveragePrice: number | null;
@@ -139,7 +151,10 @@ function isRecent(value: string | null | undefined, days: number) {
   return Date.now() - timestamp <= days * DAY_IN_MS;
 }
 
-function getComparableListings(listing: Listing, marketListings: Listing[]) {
+function getComparableListings(
+  listing: Listing,
+  marketListings: ListingComparableRecord[],
+) {
   if (!listing.area_id) {
     return [];
   }
@@ -257,7 +272,7 @@ export function formatRelativeTime(value: string | null | undefined) {
 
 export function buildListingIntel(
   listing: Listing,
-  marketListings: Listing[],
+  marketListings: ListingComparableRecord[],
 ): ListingIntel {
   const comparableListings = getComparableListings(listing, marketListings);
   const marketAveragePrice = average(
@@ -349,7 +364,7 @@ function hasPrecomputedBrowseIntel(listing: BrowseListingRecord) {
 
 export function buildListingIntelFromRecord(
   listing: BrowseListingRecord,
-  marketListings: Listing[] = [],
+  marketListings: ListingComparableRecord[] = [],
 ): ListingIntel {
   if (!hasPrecomputedBrowseIntel(listing)) {
     return buildListingIntel(listing, marketListings);

@@ -19,6 +19,7 @@ import {
   getNewDealAlertAvailableAt,
   getNewDealAlertCooldownState,
 } from "@/lib/email-alert-config";
+import { BROKER_EMAIL_OTP_TTL_MINUTES } from "@/lib/broker-email-verification";
 import {
   buildEmailAssetUrl,
   brokerEmailVerificationOtpTemplate,
@@ -53,6 +54,7 @@ import {
 } from "@/components/browse-listings/browse-listings-utils";
 import { getRequirementMatchedListings, isListingMatchingRequirement } from "@/lib/requirement-matching";
 import { hydrateListings } from "@/lib/platform-server-data";
+import { fetchHydratedRequirementMatchCandidateListings } from "@/lib/requirements-server";
 
 type PublicEnquiryEmail = {
   brokerName: string;
@@ -653,16 +655,15 @@ export async function triggerRequirementMatchFoundForRequirement(data: { require
     return null;
   }
 
-  const [owner, activeListings] = await Promise.all([
-    resolveRequirementOwner(supabase, requirement),
-    fetchActiveListings(supabase),
-  ]);
+  const owner = await resolveRequirementOwner(supabase, requirement);
 
   if (!owner) {
     return null;
   }
 
-  const eligibleListings = activeListings.filter((listing) => listing.created_by !== owner.id);
+  const eligibleListings = await fetchHydratedRequirementMatchCandidateListings(supabase, {
+    excludeUserId: owner.id,
+  });
   const matchedListings = getRequirementMatchedListings(requirement, eligibleListings).map((match) => match.listing);
 
   if (!matchedListings.length) {
@@ -988,7 +989,7 @@ export async function sendBrokerEmailVerificationOtp(data: BrokerEmailOtpEmail):
     template: brokerEmailVerificationOtpTemplate({
       brokerName: data.brokerName,
       otp: data.otp,
-      expiresAt: formatDateTime(data.expiresAt),
+      validityText: `Valid for ${BROKER_EMAIL_OTP_TTL_MINUTES} minutes.`,
     }),
     eventKey: `broker_email_verification_otp:${data.brokerEmail.toLowerCase()}:${data.expiresAt}`,
     metadata: {

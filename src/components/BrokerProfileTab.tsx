@@ -174,6 +174,10 @@ export function BrokerProfileTab({
           ? ""
           : "Enter a valid WhatsApp number for the selected country code.";
       case "instagramProfile":
+        if (!nextForm.instagramProfile.trim()) {
+          return "Instagram is required.";
+        }
+
         return getBrokerSocialFieldError("instagramProfile", nextForm.instagramProfile);
       case "linkedinProfile":
         return getBrokerSocialFieldError("linkedinProfile", nextForm.linkedinProfile);
@@ -537,12 +541,12 @@ export function BrokerProfileTab({
                 linkedinValue={form.linkedinProfile}
                 instagramError={fieldErrors.instagramProfile}
                 linkedinError={fieldErrors.linkedinProfile}
+                instagramRequired
                 onInstagramChange={(value) => handleFieldChange("instagramProfile", value)}
                 onLinkedInChange={(value) => handleFieldChange("linkedinProfile", value)}
                 onInstagramBlur={() => updateFieldError("instagramProfile", form)}
                 onLinkedInBlur={() => updateFieldError("linkedinProfile", form)}
                 disabled={submitting}
-                helperText="Optional. Add your active Instagram and LinkedIn profiles so admins can reference them when reviewing your account."
               />
             </div>
 

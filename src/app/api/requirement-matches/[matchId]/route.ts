@@ -4,6 +4,7 @@ import { getRequestUser, getServiceSupabase, jsonError, withNoStore } from "@/li
 import { isActiveBrokerStatus } from "@/lib/deal-utils";
 import { fetchBrokerProfileByUserId } from "@/lib/requirements-server";
 import type { RequirementMatchStatus } from "@/lib/deal-types";
+import { markNotificationsForEntityRead } from "@/lib/notifications-server";
 
 const ALLOWED_STATUSES = new Set<RequirementMatchStatus>(["new", "read", "contacted", "archived"]);
 
@@ -67,17 +68,15 @@ export async function PATCH(request: NextRequest, { params }: { params: { matchI
   }
 
   if (nextStatus !== "new") {
-    const notificationUpdate = {
-      is_read: true,
-      read_at: new Date().toISOString(),
-    };
-
-    let notificationQuery = supabase.from("broker_notifications").update(notificationUpdate).eq("requirement_match_id", params.matchId);
-    if (typeof body.notificationId === "string" && body.notificationId.trim()) {
-      notificationQuery = notificationQuery.eq("id", body.notificationId.trim());
-    }
-
-    await notificationQuery;
+    await markNotificationsForEntityRead(supabase, {
+      entityId: params.matchId,
+      entityType: "requirement_match",
+      notificationId:
+        typeof body.notificationId === "string" && body.notificationId.trim()
+          ? body.notificationId.trim()
+          : null,
+      recipientUserId: viewer.id,
+    });
   }
 
   return NextResponse.json({ success: true }, withNoStore());

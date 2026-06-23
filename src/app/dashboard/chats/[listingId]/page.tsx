@@ -29,7 +29,7 @@ import { getClientSessionResetEpoch } from "@/lib/client-session";
 import { apiFetch, apiFetchCached, getApiCacheKey, setCachedApiData } from "@/lib/deal-api";
 import { invalidateChatCaches } from "@/lib/client-cache";
 import { supabase, syncSupabaseRealtimeAuth } from "@/lib/supabase";
-import { getSessionResource } from "@/lib/session-resource";
+import { getSessionResource, getSessionResourceGeneration } from "@/lib/session-resource";
 import type { BrokerDashboardData, BrokerListingDetail, ChatConversationSummary, ChatMessage, ChatUserSummary, Listing, ListingImage, Requirement } from "@/lib/deal-types";
 import {
   cn,
@@ -974,7 +974,7 @@ function syncConversationGroupsCache(groups: ChatConversationSummary[], counts?:
 }
 
 function syncBrokerDashboardChatsCache(groups: ChatConversationSummary[]) {
-  ["/api/dashboard", "/api/dashboard?scope=notifications"].forEach((path) => {
+  ["/api/dashboard/chats"].forEach((path) => {
     const currentDashboard = getCachedApiPayload<BrokerDashboardData>(path);
     if (!currentDashboard) {
       return;
@@ -1046,7 +1046,7 @@ function isChatPayloadForSendTarget(current: ChatResponse | null, sendTarget: Ch
 function ChatBackButton() {
   return (
     <BackButton
-      fallbackHref="/dashboard?section=chats"
+      fallbackHref="/dashboard/chats"
       ariaLabel="Back to chat list"
       className="inline-flex shrink-0 items-center justify-center rounded-[8px] border border-white/20 bg-white/10 px-2.5 py-1.5 text-[12.5px] font-medium text-white shadow-[0_14px_28px_rgba(31,47,82,0.12)] transition hover:bg-white/15 sm:px-3 sm:py-2 sm:text-[13px] md:px-3 md:py-2 md:text-[14px]"
     >
@@ -2593,16 +2593,37 @@ function ListingChatPageContent() {
   }, [chat]);
 
   useEffect(() => {
+    let isActive = true;
+
     if (!loading && (!user || !canAccessBrokerWorkspace(user))) {
       router.replace(getDefaultRouteForUser(user));
-      return;
+      return () => {
+        isActive = false;
+      };
     }
 
     if (!loading && user && (routeConversationId || draftListingId)) {
+      const requestGeneration = getSessionResourceGeneration();
+      const isCurrentRequest = () => isActive && requestGeneration === getSessionResourceGeneration();
+
       loadChat()
-        .catch((error) => enqueueSnackbar(error instanceof Error ? error.message : "Failed to load chat.", { variant: "error" }))
-        .finally(() => setPageLoading(false));
+        .catch((error) => {
+          if (!isCurrentRequest()) {
+            return;
+          }
+
+          enqueueSnackbar(error instanceof Error ? error.message : "Failed to load chat.", { variant: "error" });
+        })
+        .finally(() => {
+          if (isCurrentRequest()) {
+            setPageLoading(false);
+          }
+        });
     }
+
+    return () => {
+      isActive = false;
+    };
   }, [draftListingId, enqueueSnackbar, loadChat, loading, routeConversationId, router, user]);
 
   const activeConversationEntry = useMemo(

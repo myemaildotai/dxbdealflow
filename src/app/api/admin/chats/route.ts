@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServiceSupabase, LISTING_SELECT, requireAdmin, withNoStore } from "@/lib/deal-server";
-import { hydrateListings, hydrateMessages } from "@/lib/platform-server-data";
+import { getServiceSupabase, requireAdmin, withNoStore } from "@/lib/deal-server";
+import { hydrateMessages } from "@/lib/platform-server-data";
 import type {
+  Area,
   AdminChatConversationCursor,
   AdminChatPage,
   BrokerProfile,
   ChatMessage,
   Listing,
+  ListingImage,
   PlatformUser,
 } from "@/lib/deal-types";
 
@@ -14,6 +16,8 @@ const DEFAULT_CHAT_LIMIT = 20;
 const MAX_CHAT_LIMIT = 40;
 const CHAT_MESSAGE_SELECT =
   "id, conversation_id, sender_id, receiver_id, client_message_id, message_sequence, content, created_at, updated_at";
+const ADMIN_CHAT_LISTING_SELECT = "id, title, status, price, is_visible, deleted_at, area_id";
+const ADMIN_CHAT_LISTING_IMAGE_SELECT = "id, listing_id, file_name, storage_path, public_url, sort_order, is_cover, created_at";
 
 type ConversationRow = {
   id: string;
@@ -42,11 +46,11 @@ type AdminConversationMessageStats = {
   brokerUnreadCount: number;
 };
 
-type AdminConversationMessageStatRow = {
-  conversation_id: string;
-  receiver_id: string | null;
-  message_sequence: number | null;
-  created_at: string;
+type AdminChatListingRow = Pick<Listing, "id" | "title" | "status" | "price" | "is_visible" | "deleted_at" | "area_id">;
+
+type MessageCountFilterQuery = {
+  gt(column: string, value: string | number): MessageCountFilterQuery;
+  or(filter: string): MessageCountFilterQuery;
 };
 
 function getBoundedLimit(value: string | null, fallback: number, max: number) {
@@ -91,26 +95,37 @@ function uniqueIds(ids: Array<string | null | undefined>) {
   return Array.from(new Set(ids.filter(Boolean))) as string[];
 }
 
-function isMessageUnreadForReader(
-  message: Pick<AdminConversationMessageStatRow, "created_at" | "message_sequence">,
-  readSequence?: number | null,
-  readAt?: string | null
-) {
-  if (typeof readSequence === "number" && Number.isFinite(readSequence) && typeof message.message_sequence === "number") {
-    return message.message_sequence > readSequence;
-  }
-
-  if (readAt) {
-    return message.created_at > readAt;
-  }
-
-  return true;
-}
-
 function getConversationCursor(conversation: ConversationRow): AdminChatConversationCursor {
   return {
     lastMessageAt: conversation.last_message_at || conversation.updated_at || conversation.created_at,
     id: conversation.id,
+  };
+}
+
+function createServerTiming() {
+  const entries: string[] = [];
+
+  return {
+    async measure<T>(name: string, operation: () => Promise<T>) {
+      const startedAt = Date.now();
+      try {
+        return await operation();
+      } finally {
+        entries.push(`${name};dur=${Math.max(Date.now() - startedAt, 0)}`);
+      }
+    },
+    responseInit() {
+      const init = withNoStore();
+      const headers = new Headers(init.headers);
+      if (entries.length) {
+        headers.set("Server-Timing", entries.join(", "));
+      }
+
+      return {
+        ...init,
+        headers,
+      };
+    },
   };
 }
 
@@ -146,6 +161,65 @@ async function fetchAdminChatParticipants(
   );
 }
 
+function applyUnreadCountFilter<T extends MessageCountFilterQuery>(
+  query: T,
+  readSequence?: number | null,
+  readAt?: string | null
+) {
+  if (typeof readSequence === "number" && Number.isFinite(readSequence)) {
+    if (readAt) {
+      return query.or(`message_sequence.gt.${readSequence},and(message_sequence.is.null,created_at.gt.${readAt})`) as T;
+    }
+
+    return query.or(`message_sequence.gt.${readSequence},message_sequence.is.null`) as T;
+  }
+
+  if (readAt) {
+    return query.gt("created_at", readAt) as T;
+  }
+
+  return query;
+}
+
+async function countConversationMessages(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  conversation: ConversationRow
+) {
+  let ownerUnreadQuery = supabase
+    .from("chat_conversation_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("conversation_id", conversation.id)
+    .eq("receiver_id", conversation.owner_user_id);
+  ownerUnreadQuery = applyUnreadCountFilter(ownerUnreadQuery, conversation.owner_last_read_sequence, conversation.owner_last_read_at);
+
+  let brokerUnreadQuery = supabase
+    .from("chat_conversation_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("conversation_id", conversation.id)
+    .eq("receiver_id", conversation.broker_user_id);
+  brokerUnreadQuery = applyUnreadCountFilter(brokerUnreadQuery, conversation.broker_last_read_sequence, conversation.broker_last_read_at);
+
+  const [messageCountResult, ownerUnreadResult, brokerUnreadResult] = await Promise.all([
+    supabase.from("chat_conversation_messages").select("id", { count: "exact", head: true }).eq("conversation_id", conversation.id),
+    ownerUnreadQuery,
+    brokerUnreadQuery,
+  ]);
+
+  const error = messageCountResult.error || ownerUnreadResult.error || brokerUnreadResult.error;
+  if (error) {
+    throw new Error(error.message || "Failed to count chat messages.");
+  }
+
+  return {
+    conversationId: conversation.id,
+    stats: {
+      messageCount: messageCountResult.count || 0,
+      ownerUnreadCount: ownerUnreadResult.count || 0,
+      brokerUnreadCount: brokerUnreadResult.count || 0,
+    } satisfies AdminConversationMessageStats,
+  };
+}
+
 async function fetchConversationMessageStats(
   supabase: ReturnType<typeof getServiceSupabase>,
   conversations: ConversationRow[]
@@ -155,7 +229,6 @@ async function fetchConversationMessageStats(
     return new Map<string, AdminConversationMessageStats>();
   }
 
-  const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
   const statsByConversationId = new Map(
     conversations.map((conversation) => [
       conversation.id,
@@ -167,38 +240,77 @@ async function fetchConversationMessageStats(
     ])
   );
 
-  const { data, error } = await supabase
-    .from("chat_conversation_messages")
-    .select("conversation_id, receiver_id, message_sequence, created_at")
-    .in("conversation_id", conversationIds);
-
-  if (error) {
-    throw new Error(error.message || "Failed to count chat messages.");
-  }
-
-  ((data as AdminConversationMessageStatRow[] | null) || []).forEach((message) => {
-    const conversation = conversationById.get(message.conversation_id);
-    const stats = statsByConversationId.get(message.conversation_id);
-    if (!conversation || !stats) {
-      return;
-    }
-
-    stats.messageCount += 1;
-
-    if (message.receiver_id === conversation.owner_user_id) {
-      if (isMessageUnreadForReader(message, conversation.owner_last_read_sequence, conversation.owner_last_read_at)) {
-        stats.ownerUnreadCount += 1;
-      }
-    }
-
-    if (message.receiver_id === conversation.broker_user_id) {
-      if (isMessageUnreadForReader(message, conversation.broker_last_read_sequence, conversation.broker_last_read_at)) {
-        stats.brokerUnreadCount += 1;
-      }
-    }
+  const results = await Promise.all(conversations.map((conversation) => countConversationMessages(supabase, conversation)));
+  results.forEach(({ conversationId, stats }) => {
+    statsByConversationId.set(conversationId, stats);
   });
 
   return statsByConversationId;
+}
+
+async function fetchListingPreviewImages(supabase: ReturnType<typeof getServiceSupabase>, listingIds: string[]) {
+  if (!listingIds.length) {
+    return new Map<string, ListingImage>();
+  }
+
+  const results = await Promise.all(
+    listingIds.map(async (listingId) => {
+      const { data, error } = await supabase
+        .from("listing_images")
+        .select(ADMIN_CHAT_LISTING_IMAGE_SELECT)
+        .eq("listing_id", listingId)
+        .order("is_cover", { ascending: false })
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true })
+        .limit(1);
+
+      if (error) {
+        throw new Error(error.message || "Failed to load chat listing image.");
+      }
+
+      return [listingId, ((data as ListingImage[] | null) || [])[0] || null] as const;
+    })
+  );
+
+  return new Map(results.flatMap(([listingId, image]) => (image ? [[listingId, image] as const] : [])));
+}
+
+async function hydrateAdminChatListings(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  listings: AdminChatListingRow[]
+) {
+  if (!listings.length) {
+    return new Map<string, AdminChatPage["chats"][number]["listing"]>();
+  }
+
+  const areaIds = uniqueIds(listings.map((listing) => listing.area_id));
+  const [areasResult, imageMap] = await Promise.all([
+    areaIds.length ? supabase.from("areas").select("id, name, city").in("id", areaIds) : Promise.resolve({ data: [] as Array<Pick<Area, "id" | "name" | "city">> }),
+    fetchListingPreviewImages(supabase, listings.map((listing) => listing.id)),
+  ]);
+  const areaMap = new Map(
+    (((areasResult.data as Array<Pick<Area, "id" | "name" | "city">> | null) || []).map((area) => [area.id, area]))
+  );
+
+  return new Map(
+    listings.map((listing) => {
+      const image = imageMap.get(listing.id);
+
+      return [
+        listing.id,
+        {
+          id: listing.id,
+          title: listing.title,
+          status: listing.status,
+          price: listing.price,
+          is_visible: listing.is_visible,
+          deleted_at: listing.deleted_at || null,
+          area: listing.area_id ? areaMap.get(listing.area_id) || null : null,
+          listing_images: image ? [image] : [],
+        },
+      ];
+    })
+  );
 }
 
 function toChatParticipant(participant: AdminChatParticipant | null | undefined) {
@@ -216,7 +328,8 @@ function toChatParticipant(participant: AdminChatParticipant | null | undefined)
 }
 
 export async function GET(request: NextRequest) {
-  const auth = await requireAdmin(request);
+  const timing = createServerTiming();
+  const auth = await timing.measure("admin_auth", () => requireAdmin(request));
   if ("error" in auth) return auth.error;
 
   const supabase = getServiceSupabase();
@@ -249,7 +362,7 @@ export async function GET(request: NextRequest) {
 
   pageQuery = pageQuery.order("last_message_at", { ascending: false }).order("id", { ascending: false }).limit(limit + 1);
 
-  const [countResult, conversationsResult] = await Promise.all([countQuery, pageQuery]);
+  const [countResult, conversationsResult] = await timing.measure("chat_page", () => Promise.all([countQuery, pageQuery]));
   if (countResult.error) {
     throw new Error(countResult.error.message || "Failed to count admin chats.");
   }
@@ -261,9 +374,11 @@ export async function GET(request: NextRequest) {
   const hasMore = fetchedConversations.length > limit;
   const rawPageConversations = fetchedConversations.slice(0, limit);
   const nextCursor = hasMore && rawPageConversations.length ? getConversationCursor(rawPageConversations[rawPageConversations.length - 1]) : null;
-  const participants = await fetchAdminChatParticipants(
-    supabase,
-    rawPageConversations.flatMap((conversation) => [conversation.owner_user_id, conversation.broker_user_id])
+  const participants = await timing.measure("chat_participants", () =>
+    fetchAdminChatParticipants(
+      supabase,
+      rawPageConversations.flatMap((conversation) => [conversation.owner_user_id, conversation.broker_user_id])
+    )
   );
   const seenConversationKeys = new Set<string>();
   const conversations = rawPageConversations.filter((conversation) => {
@@ -291,7 +406,7 @@ export async function GET(request: NextRequest) {
         nextCursor,
         totalConversations: countResult.count || 0,
       } satisfies AdminChatPage,
-      withNoStore()
+      timing.responseInit()
     );
     return response;
   }
@@ -302,27 +417,29 @@ export async function GET(request: NextRequest) {
   );
   const lastMessageIds = Array.from(conversationByLastMessageId.keys());
 
-  const [listingRowsResult, lastMessageRowsResult, messageStatsByConversationId] = await Promise.all([
-    supabase.from("listings").select(LISTING_SELECT).in("id", listingIds),
+  const [listingRowsResult, lastMessageRowsResult, messageStatsByConversationId] = await timing.measure("chat_related", () => Promise.all([
+    supabase.from("listings").select(ADMIN_CHAT_LISTING_SELECT).in("id", listingIds),
     lastMessageIds.length
       ? supabase.from("chat_conversation_messages").select(CHAT_MESSAGE_SELECT).in("id", lastMessageIds)
       : Promise.resolve({ data: [] as Array<Omit<ChatMessage, "listing_id">> }),
     fetchConversationMessageStats(supabase, conversations),
-  ]);
+  ]));
 
-  const listings = await hydrateListings(supabase, (listingRowsResult.data as Listing[] | null) || [], {
-    includeAgencies: false,
-    includeCommissionTerms: false,
-    includeOwnerActiveCount: false,
-    includeOwners: false,
-  });
-  const listingMap = new Map(listings.map((listing) => [listing.id, listing]));
-  const hydratedLastMessages = await hydrateMessages(
-    supabase,
-    ((lastMessageRowsResult.data as Array<Omit<ChatMessage, "listing_id">> | null) || []).flatMap((message) => {
-      const conversation = conversationByLastMessageId.get(message.id);
-      return conversation ? [{ ...message, listing_id: conversation.listing_id }] : [];
-    })
+  if (listingRowsResult.error) {
+    throw new Error(listingRowsResult.error.message || "Failed to load chat listings.");
+  }
+
+  const [listingMap, hydratedLastMessages] = await timing.measure("chat_hydrate", () =>
+    Promise.all([
+      hydrateAdminChatListings(supabase, (listingRowsResult.data as AdminChatListingRow[] | null) || []),
+      hydrateMessages(
+        supabase,
+        ((lastMessageRowsResult.data as Array<Omit<ChatMessage, "listing_id">> | null) || []).flatMap((message) => {
+          const conversation = conversationByLastMessageId.get(message.id);
+          return conversation ? [{ ...message, listing_id: conversation.listing_id }] : [];
+        })
+      ),
+    ])
   );
   const lastMessageByConversationId = new Map(hydratedLastMessages.map((message) => [message.conversation_id || "", message]));
 
@@ -335,16 +452,7 @@ export async function GET(request: NextRequest) {
     }
 
     const group = grouped.get(conversation.listing_id) || {
-      listing: {
-        id: listing.id,
-        title: listing.title,
-        status: listing.status,
-        price: listing.price,
-        is_visible: listing.is_visible,
-        deleted_at: listing.deleted_at || null,
-        area: listing.area ? { name: listing.area.name, city: listing.area.city } : null,
-        listing_images: listing.listing_images || [],
-      },
+      listing,
       conversations: [],
     };
     const messageStats = messageStatsByConversationId.get(conversation.id) || {
@@ -389,7 +497,7 @@ export async function GET(request: NextRequest) {
       nextCursor,
       totalConversations: countResult.count || 0,
     } satisfies AdminChatPage,
-    withNoStore()
+    timing.responseInit()
   );
   return response;
 }

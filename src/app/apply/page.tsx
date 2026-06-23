@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import PhoneInput, { type Value as PhoneNumberValue } from "react-phone-number-input";
 import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -9,18 +10,30 @@ import { useSnackbar } from "notistack";
 import { authOperations } from "@/auth/authOperations";
 import { useAuth } from "@/auth/useAuth";
 import { BrokerAvatar } from "@/components/BrokerAvatar";
-import { BrokerVerificationLoadingModal, type BrokerVerificationLoadingPhase } from "@/components/BrokerVerificationLoadingModal";
+import type { BrokerVerificationLoadingPhase } from "@/components/BrokerVerificationLoadingModal";
 import { BrokerSocialProfilesSection } from "@/components/BrokerSocialProfilesSection";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { PublicHeader } from "@/components/PublicHeader";
 import { getBrokerSocialFieldError } from "@/lib/broker-social";
-import { apiFetch } from "@/lib/deal-api";
+import { apiFetch, apiFetchCached } from "@/lib/deal-api";
 import { BROKER_BIO_MAX_LENGTH, getBrokerBioCharacterCount, normalizeBrokerBio } from "@/lib/broker-application";
-import { Area, BrokerVerificationResponse, PublicOverview } from "@/lib/deal-types";
+import { Area, BrokerVerificationResponse } from "@/lib/deal-types";
 import { compressImageForUpload } from "@/lib/image-upload";
 import { isValidInternationalPhoneNumber, normalizePhoneNumber } from "@/lib/phone";
 import { getProfilePhotoValidationError, PROFILE_PHOTO_ACCEPT } from "@/lib/profile-photo";
 import { getDefaultRouteForUser, isPendingBroker } from "@/lib/route-access";
+
+const BrokerVerificationLoadingModal = dynamic(
+  () =>
+    import("@/components/BrokerVerificationLoadingModal").then(
+      (module) => module.BrokerVerificationLoadingModal,
+    ),
+  { ssr: false },
+);
+
+const preloadBrokerVerificationLoadingModal = () => {
+  void import("@/components/BrokerVerificationLoadingModal");
+};
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -647,7 +660,7 @@ export default function ApplyPage() {
   };
 
   useEffect(() => {
-    apiFetch<PublicOverview>("/api/public/overview")
+    apiFetchCached<{ areas: Area[] }>("/api/public/areas", {}, { ttlMs: 300_000 })
       .then((payload) => setAreas(payload.areas))
       .finally(() => setLoadingAreas(false));
   }, []);
@@ -908,7 +921,12 @@ export default function ApplyPage() {
 
               <section className="flex justify-center lg:justify-end">
                 <div className="panel w-full max-w-[700px] p-4 sm:p-8 lg:p-10">
-                <form onSubmit={handleSubmit} noValidate className="grid gap-3 sm:gap-4 lg:gap-5">
+                <form
+                  onSubmit={handleSubmit}
+                  onFocusCapture={preloadBrokerVerificationLoadingModal}
+                  noValidate
+                  className="grid gap-3 sm:gap-4 lg:gap-5"
+                >
                   <div className="text-center">
                     <div className="relative mx-auto h-14 w-[210px]">
                       <Image src="/assets/Logo-Blue.png" alt="DXB Deal Flow" fill className="object-contain" sizes="210px" priority />
@@ -1291,7 +1309,7 @@ export default function ApplyPage() {
           </div>
         </div>
 
-        <BrokerVerificationLoadingModal open={submitting && !submitted} phase={verificationLoadingPhase} />
+        {submitting && !submitted ? <BrokerVerificationLoadingModal open phase={verificationLoadingPhase} /> : null}
 
         {submitted && submissionStatus && !resultModalDismissed ? (
           <VerificationResultModal

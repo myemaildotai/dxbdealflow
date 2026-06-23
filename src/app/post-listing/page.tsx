@@ -9,16 +9,23 @@ import { ListingSubmittedSuccessModal } from "@/components/ListingSubmittedSucce
 import { ListingMediaLinks } from "@/components/ListingMediaLinks";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { useAuth } from "@/auth/useAuth";
-import { apiFetch } from "@/lib/deal-api";
+import { apiFetch, apiFetchCached } from "@/lib/deal-api";
 import { invalidateListingCaches } from "@/lib/client-cache";
 import { cn, formatDealType, formatPropertyType } from "@/lib/deal-utils";
-import { Area, Listing, ListingDocument, ListingFormValues, ListingImage, PublicOverview } from "@/lib/deal-types";
+import { Area, Listing, ListingDocument, ListingFormValues, ListingImage } from "@/lib/deal-types";
 import {
   LISTING_DOCUMENT_ACCEPT,
+  LISTING_DOCUMENT_DUPLICATE_FILENAME_MESSAGE,
   LISTING_DOCUMENT_MAX_SIZE_LABEL,
   getListingDocumentAllowedFormatsLabel,
   getListingDocumentValidationError,
+  normalizeListingDocumentFileName,
+  type UploadedListingDocumentMetadata,
 } from "@/lib/document-upload";
+import {
+  removeUploadedListingDocuments,
+  uploadListingDocumentsDirectly,
+} from "@/lib/listing-document-upload-client";
 import { getHandoverDateValidationMessage, getMinimumHandoverDateKey } from "@/lib/handover-date";
 import {
   compressImagesForUpload,
@@ -74,7 +81,6 @@ type ListingProgressState = {
   score: number;
   maxScore: number;
 };
-
 const FIELD_ORDER: FieldKey[] = ["title", "propertyType", "areaId", "price", "bedrooms", "sizeSqft", "developer", "dealType", "handoverDate", "yieldPercent", "coBrokePercent", "description", "images"];
 const EXISTING_IMAGE_KEY_PREFIX = "existing:";
 const NEW_IMAGE_KEY_PREFIX = "new:";
@@ -768,15 +774,15 @@ function PostListingPageContent() {
       const controller = new AbortController();
 
       Promise.all([
-        apiFetch<PublicOverview>("/api/public/overview", { signal: controller.signal }),
+        apiFetchCached<{ areas: Area[] }>("/api/public/areas", {}, { ttlMs: 300_000 }),
         editId ? apiFetch<ListingDetailResponse>(`/api/listings/${editId}`, { signal: controller.signal }) : Promise.resolve(null),
       ])
-        .then(([overview, detail]) => {
+        .then(([areasPayload, detail]) => {
           if (controller.signal.aborted) {
             return;
           }
 
-          setAreas(overview.areas || []);
+          setAreas(areasPayload.areas || []);
           if (detail?.listing) {
             if (!detail.listing.can_edit) throw new Error("You can only edit your own listings.");
             setValues({
@@ -1024,11 +1030,33 @@ function PostListingPageContent() {
     const nextFiles = Array.from(fileList || []);
     if (!nextFiles.length) return;
 
-    const currentKeys = new Set(documents.map(getFileKey));
-    const uniqueFiles = nextFiles.filter((file) => !currentKeys.has(getFileKey(file)));
-    if (!uniqueFiles.length) return;
-
     setTouched((current) => ({ ...current, documents: true }));
+
+    const currentFileNames = new Set(documents.map((file) => normalizeListingDocumentFileName(file.name)));
+    if (isEditMode) {
+      existingDocuments.forEach((document) => {
+        currentFileNames.add(normalizeListingDocumentFileName(document.file_name));
+      });
+    }
+
+    let duplicateFileNameFound = false;
+    const uniqueFiles = nextFiles.filter((file) => {
+      const normalizedFileName = normalizeListingDocumentFileName(file.name);
+      if (currentFileNames.has(normalizedFileName)) {
+        duplicateFileNameFound = true;
+        return false;
+      }
+
+      currentFileNames.add(normalizedFileName);
+      return true;
+    });
+
+    if (!uniqueFiles.length) {
+      if (duplicateFileNameFound) {
+        setDocumentMessage(LISTING_DOCUMENT_DUPLICATE_FILENAME_MESSAGE);
+      }
+      return;
+    }
 
     for (const file of uniqueFiles) {
       const validationError = getListingDocumentValidationError(file);
@@ -1038,7 +1066,7 @@ function PostListingPageContent() {
       }
     }
 
-    setDocumentMessage("");
+    setDocumentMessage(duplicateFileNameFound ? LISTING_DOCUMENT_DUPLICATE_FILENAME_MESSAGE : "");
     setDocuments((current) => [...current, ...uniqueFiles]);
   };
 
@@ -1110,7 +1138,7 @@ function PostListingPageContent() {
 
   const handleGoToListings = () => {
     setSuccessModalOpen(false);
-    router.push("/dashboard?section=listings");
+    router.push("/dashboard/listings");
   };
 
   const handleBackToWorkspace = () => {
@@ -1146,29 +1174,52 @@ function PostListingPageContent() {
     const formData = new FormData();
     Object.entries(values).forEach(([key, value]) => formData.append(key, key === "bedrooms" ? mapBedroomToApi(value) : String(value)));
     orderedNewImages.forEach((file) => formData.append("images", file));
-    documents.forEach((file) => formData.append("documents", file));
     formData.append("imageOrder", JSON.stringify(orderedPreviewItems.map((item) => item.key)));
     formData.append("removeImageIds", JSON.stringify(stagedRemovedImageIds));
 
     setSubmitting(true);
-    setDocumentUploadStatus(documents.length ? `Uploading ${documents.length} document${documents.length === 1 ? "" : "s"}...` : "");
+    let uploadedDocuments: UploadedListingDocumentMetadata[] = [];
+    let shouldCleanupUploadedDocuments = false;
+
     try {
       let listingId = editId || null;
 
+      if (documents.length) {
+        if (!user?.uid) {
+          throw new Error("Please sign in again before uploading documents.");
+        }
+
+        setDocumentUploadStatus(`Uploading ${documents.length} document${documents.length === 1 ? "" : "s"}...`);
+        uploadedDocuments = await uploadListingDocumentsDirectly(user.uid, documents, {
+          onProgress: ({ completed, total }) => {
+            setDocumentUploadStatus(`Uploading documents ${completed}/${total}...`);
+          },
+        });
+        shouldCleanupUploadedDocuments = true;
+      }
+
+      formData.append("documents", JSON.stringify(uploadedDocuments));
+
       if (editId) {
         await apiFetch<{ success: true }>(`/api/listings/${editId}`, { method: "PUT", body: formData });
+        shouldCleanupUploadedDocuments = false;
         enqueueSnackbar("Listing updated.", { variant: "success" });
       } else {
         const response = await apiFetch<{ success: true; listingId: string }>("/api/listings/create", { method: "POST", body: formData });
+        shouldCleanupUploadedDocuments = false;
         listingId = response.listingId;
       }
       invalidateListingCaches(listingId || undefined);
       if (editId) {
-        router.push("/dashboard?section=listings");
+        router.push("/dashboard/listings");
       } else {
         setSuccessModalOpen(true);
       }
     } catch (error) {
+      if (shouldCleanupUploadedDocuments) {
+        await removeUploadedListingDocuments(uploadedDocuments.map((document) => document.storage_path));
+      }
+
       enqueueSnackbar(error instanceof Error ? error.message : "Failed to save listing.", { variant: "error" });
     } finally {
       setSubmitting(false);
@@ -1322,7 +1373,7 @@ function PostListingPageContent() {
           progress={progress}
           backAction={
             <BackButton
-              fallbackHref="/dashboard?section=listings"
+              fallbackHref="/dashboard/listings"
               aria-label="Back to Listings"
               className={cn(
                 "inline-flex min-h-[52px] w-full items-center justify-center gap-2 rounded-[16px] border border-[#e6ebf2] bg-white px-4 py-3 text-sm font-semibold text-brand-navy shadow-[0_12px_26px_rgba(15,42,95,0.05)] transition hover:border-[#d7deea] hover:bg-[#fbfcfe] sm:w-auto"

@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type UIEvent } from "react";
+import { SkeletonBlock } from "@/components/SkeletonBlock";
 import { useLazyNotificationList } from "@/hooks/useLazyNotificationList";
 import { cn, formatDate } from "@/lib/deal-utils";
 
@@ -142,23 +143,42 @@ export function getAdminPriorityItemVisual(item: AdminPriorityQueueItem) {
 }
 
 export function AdminPriorityQueue({
+  hasMore,
   items,
+  isLoading = false,
+  isLoadingMore: externalIsLoadingMore = false,
+  onLoadMore,
   totalCount,
 }: {
+  hasMore?: boolean;
   items: AdminPriorityQueueItem[];
+  isLoading?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
   totalCount: number;
 }) {
   const [markingIds, setMarkingIds] = useState<string[]>([]);
   const [activeNotificationId, setActiveNotificationId] = useState<string | null>(null);
   const interactionLockRef = useRef(false);
   const orderedItems = useMemo(() => sortAdminPriorityQueueItems(items), [items]);
-  const {
-    handleScroll: handleNotificationListScroll,
-    isLoadingMore,
-    visibleItems,
-  } = useLazyNotificationList({
+  const lazyNotificationList = useLazyNotificationList({
     items: orderedItems,
   });
+  const isExternallyPaginated = !!onLoadMore;
+  const isLoadingMore = isExternallyPaginated ? externalIsLoadingMore : lazyNotificationList.isLoadingMore;
+  const visibleItems = isExternallyPaginated ? orderedItems : lazyNotificationList.visibleItems;
+  const handleNotificationListScroll = (event: UIEvent<HTMLElement>) => {
+    if (!isExternallyPaginated) {
+      lazyNotificationList.handleScroll(event);
+      return;
+    }
+
+    const target = event.currentTarget;
+    const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+    if (distanceFromBottom <= 96 && hasMore && !externalIsLoadingMore) {
+      onLoadMore?.();
+    }
+  };
 
   const handleNotificationRead = async (item: AdminPriorityQueueItem) => {
     if (item.isRead || markingIds.includes(item.id)) return;
@@ -227,7 +247,24 @@ export function AdminPriorityQueue({
 
         <div className="relative min-h-0 flex-1 overflow-hidden rounded-[6px] bg-[#ffffff] shadow-[inset_0_1px_0_rgba(255,255,255,0.95)]">
           <div className="h-full min-h-0 overflow-y-auto overscroll-auto xl:overscroll-contain" onScroll={handleNotificationListScroll}>
-            {orderedItems.length ? (
+            {isLoading && !orderedItems.length ? (
+              <div className="space-y-0" aria-hidden="true">
+                {Array.from({ length: 5 }).map((_, index) => (
+                  <div
+                    key={index}
+                    className="grid min-h-[62px] w-full grid-cols-[48px_minmax(0,1fr)_auto_13px] items-center gap-[11px] border-0 border-b border-[#f1eee7] px-[11px] py-[10px] last:border-b-0 sm:max-xl:grid-cols-[42px_minmax(0,1fr)_13px]"
+                  >
+                    <SkeletonBlock className="h-[40px] w-[40px] rounded-full bg-[#f3ead1]" />
+                    <div className="min-w-0">
+                      <SkeletonBlock className="h-3.5 w-4/5 rounded-xl bg-[#f3ead1]" />
+                      <SkeletonBlock className="mt-2 h-3 w-3/5 rounded-xl bg-[#f3ead1]" />
+                    </div>
+                    <SkeletonBlock className="h-3 w-12 rounded-xl bg-[#f3ead1] sm:max-xl:hidden" />
+                    <SkeletonBlock className="h-3 w-3 rounded-full bg-[#f3ead1]" />
+                  </div>
+                ))}
+              </div>
+            ) : orderedItems.length ? (
               <>
                 {visibleItems.map((item) => {
                   const isUnread = !item.isRead;

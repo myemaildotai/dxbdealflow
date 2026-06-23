@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase, jsonError, requireApprovedBroker } from "@/lib/deal-server";
 import { parseNumber } from "@/lib/deal-utils";
-import { getListingDocumentValidationError } from "@/lib/document-upload";
+import {
+  getListingDocumentMetadataValidationError,
+  parseListingDocumentMetadata,
+  type UploadedListingDocumentMetadata,
+} from "@/lib/document-upload";
 import { triggerListingSubmittedEmail } from "@/lib/email-notifications";
 import { getHandoverDateValidationMessage } from "@/lib/handover-date";
 import { getImageUploadValidationError } from "@/lib/image-upload";
+import { saveUploadedListingDocuments } from "@/lib/listing-documents-server";
 import { normalizeListingMediaUrl } from "@/lib/listing-media";
 
 const MIN_LISTING_IMAGES = 1;
@@ -19,9 +24,13 @@ export async function POST(request: NextRequest) {
   const images = formData
     .getAll("images")
     .filter((entry): entry is File => entry instanceof File && entry.size > 0);
-  const documents = formData
-    .getAll("documents")
-    .filter((entry): entry is File => entry instanceof File && entry.size > 0);
+  let documents: UploadedListingDocumentMetadata[];
+
+  try {
+    documents = parseListingDocumentMetadata(formData);
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Document metadata is invalid.", 400);
+  }
 
   if (images.length < MIN_LISTING_IMAGES) {
     return jsonError("At least 1 image is required.", 400);
@@ -43,7 +52,8 @@ export async function POST(request: NextRequest) {
   }
 
   for (const document of documents) {
-    const documentValidationError = getListingDocumentValidationError(document);
+    const documentValidationError = getListingDocumentMetadataValidationError(document, auth.user.id);
+
     if (documentValidationError) {
       return jsonError(documentValidationError, 400);
     }
@@ -156,23 +166,10 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  for (const file of documents) {
-    const storagePath = `${auth.user.id}/${listingId}/${Date.now()}-${file.name}`;
-    const { error: uploadError } = await supabase.storage.from("listing-documents").upload(storagePath, file, {
-      upsert: false,
-    });
-
-    if (uploadError) {
-      return jsonError(uploadError.message || "Failed to upload document.", 500);
-    }
-
-    const { data: publicUrl } = supabase.storage.from("listing-documents").getPublicUrl(storagePath);
-    await supabase.from("listing_documents").insert({
-      listing_id: listingId,
-      file_name: file.name,
-      storage_path: storagePath,
-      public_url: publicUrl.publicUrl,
-    });
+  try {
+    await saveUploadedListingDocuments(supabase, listingId, documents);
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Failed to save document.", 500);
   }
 
   await supabase.from("chat_participants").upsert({

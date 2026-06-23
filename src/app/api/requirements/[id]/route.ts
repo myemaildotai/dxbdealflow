@@ -5,6 +5,7 @@ import { isActiveBrokerStatus } from "@/lib/deal-utils";
 import { enrichRequirementsWithSubmissionMeta, fetchBrokerProfileByUserId } from "@/lib/requirements-server";
 import type { Requirement, RequirementDeactivatedBy } from "@/lib/deal-types";
 import { parseRequirementBedroomOption } from "@/lib/requirements";
+import { markNotificationRead } from "@/lib/notifications-server";
 
 type RequirementActivityValue = string | number | boolean | null;
 
@@ -172,16 +173,14 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
       return jsonError("Notification id is required.", 400);
     }
 
-    const { error } = await supabase
-      .from("broker_notifications")
-      .update({
-        is_read: true,
-        read_at: new Date().toISOString(),
-      })
-      .eq("id", body.notificationId);
-
-    if (error) {
-      return jsonError(error.message || "Failed to update notification.", 400);
+    try {
+      await markNotificationRead(getServiceSupabase(), {
+        notificationId: body.notificationId,
+        recipientUserId: viewer.id,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update notification.";
+      return jsonError(message, message === "Notification not found." ? 404 : 400);
     }
 
     return NextResponse.json({ success: true }, withNoStore());

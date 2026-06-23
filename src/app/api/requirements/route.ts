@@ -3,8 +3,8 @@ import {
   getServiceSupabase,
   getRequestSupabase,
   getRequestUser,
+  getRequestUserWithBrokerProfileId,
   jsonError,
-  LISTING_SELECT,
   REQUIREMENT_SELECT,
   withNoStore,
 } from "@/lib/deal-server";
@@ -18,7 +18,6 @@ import {
   fetchBrokerProfileByUserId,
   fetchRequirementFilterAreas,
 } from "@/lib/requirements-server";
-import { hydrateListings } from "@/lib/platform-server-data";
 import type { Listing, Requirement } from "@/lib/deal-types";
 import { parseRequirementBedroomOption } from "@/lib/requirements";
 
@@ -28,8 +27,22 @@ function canAccessRequirementsWorkspace(role?: string | null, status?: string | 
 
 const REQUIREMENT_FETCH_BATCH_SIZE = 250;
 const REQUIREMENT_SORT_OPTIONS = ["newest", "oldest", "budget_high", "matches_high"] as const;
+const BUYER_BOARD_MY_LISTING_SELECT =
+  "id, title, property_type, price, bedrooms, status, area_id, area:areas(name, city)";
 
 type RequirementSortOption = (typeof REQUIREMENT_SORT_OPTIONS)[number];
+
+type BuyerBoardMyListingArea = {
+  name: string;
+  city: string;
+};
+
+type BuyerBoardMyListingRow = Pick<
+  Listing,
+  "id" | "title" | "property_type" | "price" | "bedrooms" | "status" | "area_id"
+> & {
+  area?: BuyerBoardMyListingArea | BuyerBoardMyListingArea[] | null;
+};
 
 type RequirementQueryFilters = {
   area: string | null;
@@ -91,6 +104,32 @@ function sortRequirements(requirements: Requirement[], sort: RequirementSortOpti
   }
 
   return sortedRequirements;
+}
+
+function normalizeBuyerBoardListingArea(areaValue: BuyerBoardMyListingRow["area"]) {
+  const area = Array.isArray(areaValue) ? areaValue[0] : areaValue;
+
+  if (!area || typeof area !== "object") {
+    return null;
+  }
+
+  return {
+    name: typeof area.name === "string" ? area.name : "",
+    city: typeof area.city === "string" ? area.city : "",
+  };
+}
+
+function mapBuyerBoardMyListing(listing: BuyerBoardMyListingRow) {
+  return {
+    id: listing.id,
+    title: listing.title,
+    property_type: listing.property_type,
+    price: listing.price,
+    bedrooms: listing.bedrooms,
+    status: listing.status,
+    area_id: listing.area_id,
+    area: normalizeBuyerBoardListingArea(listing.area),
+  };
 }
 
 function buildBaseRequirementQuery(supabase: ReturnType<typeof getRequestSupabase>) {
@@ -194,7 +233,7 @@ async function fetchAllMatchingRequirements(supabase: ReturnType<typeof getReque
 }
 
 export async function GET(request: NextRequest) {
-  const viewer = await getRequestUser(request);
+  const { user: viewer, brokerProfileId } = await getRequestUserWithBrokerProfileId(request);
   if (!viewer || !canAccessRequirementsWorkspace(viewer.role, viewer.status)) {
     return jsonError("Broker or admin access required.", 403);
   }
@@ -215,34 +254,33 @@ export async function GET(request: NextRequest) {
   const pageSize = normalizePageSize(searchParams.get("pageSize") || DEFAULT_PAGE_SIZE);
   const rangeFrom = (page - 1) * pageSize;
   const rangeTo = rangeFrom + pageSize - 1;
+  const includeStaticMetadata = searchParams.get("includeStatic") !== "0";
+  const includeRequirementOwner = viewer.role === "admin";
 
-  const brokerProfile = viewer.role === "broker" ? await fetchBrokerProfileByUserId(supabase, viewer.id) : null;
-
-  if (mine && (!brokerProfile?.id || viewer.role !== "broker")) {
+  if (mine && (!brokerProfileId || viewer.role !== "broker")) {
     return jsonError("Broker profile not found.", 404);
   }
 
   const [areas, myListingRows] = await Promise.all([
-    fetchRequirementFilterAreas(supabase),
-    viewer.role === "broker"
+    includeStaticMetadata ? fetchRequirementFilterAreas(supabase) : Promise.resolve([] as string[]),
+    viewer.role === "broker" && includeStaticMetadata
       ? supabase
           .from("listings")
-          .select(LISTING_SELECT)
+          .select(BUYER_BOARD_MY_LISTING_SELECT)
           .eq("created_by", viewer.id)
           .is("deleted_at", null)
           .in("status", ["active", "approved"])
           .order("updated_at", { ascending: false })
-      : Promise.resolve({ data: [] as Listing[] }),
+      : Promise.resolve(null),
   ]);
 
+  if (myListingRows?.error) {
+    return jsonError(myListingRows.error.message || "Failed to load broker listings.", 400);
+  }
+
   const myListings =
-    viewer.role === "broker"
-      ? await hydrateListings(supabase, (myListingRows.data as Listing[]) || [], {
-          includeAgencies: false,
-          includeCommissionTerms: false,
-          includeOwnerActiveCount: false,
-          includeOwners: false,
-        })
+    viewer.role === "broker" && includeStaticMetadata
+      ? (((myListingRows?.data as unknown as BuyerBoardMyListingRow[] | null) || []).map(mapBuyerBoardMyListing))
       : [];
   let requirements: Requirement[] = [];
   let totalCount = 0;
@@ -250,7 +288,7 @@ export async function GET(request: NextRequest) {
     mine,
     includeInactive,
     viewerRole: viewer.role,
-    brokerProfileId: brokerProfile?.id || null,
+    brokerProfileId: brokerProfileId || null,
     area,
     propertyType,
     bedrooms,
@@ -264,11 +302,21 @@ export async function GET(request: NextRequest) {
     if (sortOption === "budget_high") {
       const { requirements: matchedRequirements, totalCount: matchedCount } = await fetchAllMatchingRequirements(supabase, requirementQueryOptions);
       const sortedRequirements = sortRequirements(matchedRequirements, sortOption);
-      requirements = await enrichRequirementsWithSubmissionMeta(supabase, sortedRequirements.slice(rangeFrom, rangeTo + 1));
+      requirements = await enrichRequirementsWithSubmissionMeta(
+        supabase,
+        sortedRequirements.slice(rangeFrom, rangeTo + 1),
+        undefined,
+        { includeOwner: includeRequirementOwner }
+      );
       totalCount = matchedCount;
     } else if (sortOption === "matches_high") {
       const { requirements: matchedRequirements, totalCount: matchedCount } = await fetchAllMatchingRequirements(supabase, requirementQueryOptions);
-      const enrichedRequirements = await enrichRequirementsWithSubmissionMeta(supabase, matchedRequirements);
+      const enrichedRequirements = await enrichRequirementsWithSubmissionMeta(
+        supabase,
+        matchedRequirements,
+        undefined,
+        { includeOwner: includeRequirementOwner }
+      );
       requirements = sortRequirements(enrichedRequirements, sortOption).slice(rangeFrom, rangeTo + 1);
       totalCount = matchedCount;
     } else {
@@ -293,7 +341,12 @@ export async function GET(request: NextRequest) {
         return jsonError(error.message || "Failed to load requirements.", 400);
       }
 
-      requirements = await enrichRequirementsWithSubmissionMeta(supabase, (data as Requirement[]) || []);
+      requirements = await enrichRequirementsWithSubmissionMeta(
+        supabase,
+        (data as Requirement[]) || [],
+        undefined,
+        { includeOwner: includeRequirementOwner }
+      );
       totalCount = count || 0;
     }
   } catch (error) {
@@ -303,7 +356,7 @@ export async function GET(request: NextRequest) {
   const response = NextResponse.json(
     {
       viewerRole: viewer.role,
-      brokerProfileId: brokerProfile?.id || null,
+      brokerProfileId: brokerProfileId || null,
       areas,
       pagination: buildPaginationMeta({
         page,
@@ -311,16 +364,7 @@ export async function GET(request: NextRequest) {
         totalCount,
       }),
       requirements,
-      myListings: myListings.map((listing) => ({
-        id: listing.id,
-        title: listing.title,
-        property_type: listing.property_type,
-        price: listing.price,
-        bedrooms: listing.bedrooms,
-        status: listing.status,
-        area_id: listing.area_id,
-        area: listing.area,
-      })),
+      myListings,
     },
     withNoStore()
   );

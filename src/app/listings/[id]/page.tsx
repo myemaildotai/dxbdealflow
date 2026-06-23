@@ -3,10 +3,9 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSnackbar } from "notistack";
 import PhoneInput, { type Value as PhoneNumberValue } from "react-phone-number-input";
-import { BackButton } from "@/components/BackButton";
 import { BrokerAvatar } from "@/components/BrokerAvatar";
 import { ListingMediaLinks } from "@/components/ListingMediaLinks";
 import { PublicHeader } from "@/components/PublicHeader";
@@ -17,7 +16,16 @@ import { resolveBrokerChatHref } from "@/lib/chat-navigation";
 import { apiFetch, getApiCacheKey, getCachedApiData } from "@/lib/deal-api";
 import { Listing, type ListingImage } from "@/lib/deal-types";
 import { cn, formatCurrency, formatDate, formatDealType, formatListingStatus, formatPropertyType, getFullName, statusClasses } from "@/lib/deal-utils";
-import { isValidInternationalPhoneNumber, normalizePhoneNumber } from "@/lib/phone";
+import {
+  ENQUIRY_VALIDATION_MESSAGES,
+  normalizeEnquiryFormValues,
+  validateEnquiryField as getEnquiryFieldValidationError,
+  validateEnquiryFormValues,
+  type EnquiryField,
+  type EnquiryFieldErrors,
+} from "@/lib/enquiry-validation";
+import { getSafeListingsReturnHref, LISTINGS_RETURN_TO_PARAM } from "@/lib/listing-navigation";
+import { normalizePhoneNumber } from "@/lib/phone";
 import { canAccessBrokerWorkspace, isAdmin } from "@/lib/route-access";
 import { useSessionQuery } from "@/hooks/useSessionQuery";
 
@@ -45,11 +53,6 @@ type ListingWithUiMetrics = Listing & {
   below_market_percent?: number | null;
   demand_label?: string | null;
 };
-
-type EnquiryField = "contactName" | "contactEmail" | "contactPhone" | "message";
-type EnquiryFieldErrors = Partial<Record<EnquiryField, string>>;
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function hasText(value?: string | null) {
   return Boolean(value?.trim());
@@ -412,6 +415,8 @@ function ListingDetailSkeleton() {
 
 export default function ListingDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { enqueueSnackbar } = useSnackbar();
   const { user, loading: authLoading } = useAuth();
   const initialEnquiryForm = {
@@ -428,16 +433,20 @@ export default function ListingDetailPage() {
   const [fieldErrors, setFieldErrors] = useState<EnquiryFieldErrors>({});
 
   const listingId = params?.id;
+  const rawReturnTo = searchParams?.get(LISTINGS_RETURN_TO_PARAM) || null;
+  const listingsReturnHref = useMemo(() => getSafeListingsReturnHref(rawReturnTo, "/listings"), [rawReturnTo]);
   const requestPath = listingId ? `/api/listings/${listingId}` : "";
   const brokerView = canAccessBrokerWorkspace(user);
   const adminView = isAdmin(user);
   const internalView = brokerView || adminView;
-  const viewerCacheKey = user?.uid || "public";
   const fetchListing = useCallback(() => apiFetch<ListingDetailResponse>(requestPath), [requestPath]);
-  const { data, error, loading, refresh } = useSessionQuery<ListingDetailResponse>(getApiCacheKey(`${requestPath || "/api/listings/unknown"}?viewer=${viewerCacheKey}&internal=${internalView ? "1" : "0"}`), fetchListing, {
+  const { data, error, loading, refresh } = useSessionQuery<ListingDetailResponse>(getApiCacheKey(requestPath || "/api/listings/unknown"), fetchListing, {
     enabled: !!listingId && !authLoading,
     ttlMs: 60_000,
   });
+  const handleBackToListings = useCallback(() => {
+    router.replace(listingsReturnHref);
+  }, [listingsReturnHref, router]);
 
   const listing = data?.listing ?? null;
   const listingImages = listing?.listing_images;
@@ -656,42 +665,16 @@ export default function ListingDetailPage() {
   }, []);
 
   const validateEnquiryField = (field: EnquiryField, nextForm = form) => {
-    switch (field) {
-      case "contactName":
-        return nextForm.contactName.trim() ? "" : "Full name is required.";
-      case "contactEmail":
-        if (!nextForm.contactEmail.trim()) {
-          return "Email address is required.";
-        }
-
-        return EMAIL_REGEX.test(nextForm.contactEmail.trim()) ? "" : "Enter a valid email address.";
-      case "contactPhone":
-        if (!nextForm.contactPhone.trim()) {
-          return "";
-        }
-
-        return isValidInternationalPhoneNumber(normalizePhoneNumber(nextForm.contactPhone))
-          ? ""
-          : "Enter a valid phone number for the selected country code.";
-      case "message":
-        return nextForm.message.trim() ? "" : "Message is required.";
-      default:
-        return "";
-    }
+    return getEnquiryFieldValidationError(field, normalizeEnquiryFormValues(nextForm), {
+      phoneInvalidMessage: ENQUIRY_VALIDATION_MESSAGES.phoneInvalidSelectedCountry,
+    });
   };
 
   const validateEnquiryForm = (nextForm = form) => {
-    const nextErrors: EnquiryFieldErrors = {};
-    const fields: EnquiryField[] = ["contactName", "contactEmail", "contactPhone", "message"];
-
-    fields.forEach((field) => {
-      const error = validateEnquiryField(field, nextForm);
-      if (error) {
-        nextErrors[field] = error;
-      }
+    const validation = validateEnquiryFormValues(normalizeEnquiryFormValues(nextForm), {
+      phoneInvalidMessage: ENQUIRY_VALIDATION_MESSAGES.phoneInvalidSelectedCountry,
     });
-
-    return nextErrors;
+    return validation.errors;
   };
 
   const updateEnquiryFieldError = (field: EnquiryField, nextForm: typeof form) => {
@@ -756,10 +739,7 @@ export default function ListingDetailPage() {
 
     const nextForm = {
       ...form,
-      contactName: form.contactName.trim(),
-      contactEmail: form.contactEmail.trim(),
-      contactPhone: form.contactPhone.trim(),
-      message: form.message.trim(),
+      ...normalizeEnquiryFormValues(form),
     };
     const nextErrors = validateEnquiryForm(nextForm);
 
@@ -912,13 +892,14 @@ export default function ListingDetailPage() {
       <section className="shell page-section !pt-2 sm:!pt-8">
         <div className="hidden rounded-[12px] border border-brand-line/80 bg-white/95 p-3 shadow-[0_18px_42px_rgba(15,42,95,0.08)] backdrop-blur sm:block">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <BackButton
-              fallbackHref="/listings"
+            <button
+              type="button"
+              onClick={handleBackToListings}
               className="hidden min-h-[48px] items-center gap-2 rounded-2xl border border-brand-line bg-white px-5 text-[1.02rem] font-medium text-brand-navy shadow-[0_12px_28px_rgba(15,42,95,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-brand-blue/30 hover:bg-brand-panel-soft sm:inline-flex"
             >
               <ArrowLeftIcon className="h-5 w-5" />
               <span>Back to Listings</span>
-            </BackButton>
+            </button>
 
             {internalView ? (
               <div className="hidden w-full flex-wrap items-center gap-2 sm:gap-3 lg:flex lg:w-auto lg:justify-end">
@@ -1047,7 +1028,7 @@ export default function ListingDetailPage() {
                               src={image.public_url}
                               alt={`${listing.title} image ${index + 1}`}
                               fill
-                              loading={index <= 3 ? "eager" : "lazy"}
+                              loading={index === 0 ? "eager" : "lazy"}
                               sizes="(max-width: 640px) 72vw, (max-width: 768px) 31vw, (max-width: 1280px) 24vw, 248px"
                               quality={65}
                               className={cn(

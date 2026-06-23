@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { usePathname } from "next/navigation";
 import { useLazyNotificationList } from "@/hooks/useLazyNotificationList";
 import { cn, formatDate } from "@/lib/deal-utils";
@@ -11,6 +11,7 @@ export type HeaderNotificationBellItem = {
   title: string;
   subtitle: string;
   isRead: boolean;
+  priority?: "urgent" | "high" | "normal" | "low";
   unreadWeight?: number;
   timestamp?: string | null;
   visual: {
@@ -28,8 +29,13 @@ function getNotificationTimestamp(item: HeaderNotificationBellItem) {
 }
 
 function sortNotifications(items: HeaderNotificationBellItem[]) {
+  const priorityRank = { urgent: 0, high: 1, normal: 2, low: 3 };
+
   return [...items].sort((left, right) => {
     if (left.isRead !== right.isRead) return left.isRead ? 1 : -1;
+    const leftPriority = left.priority || "normal";
+    const rightPriority = right.priority || "normal";
+    if (leftPriority !== rightPriority) return priorityRank[leftPriority] - priorityRank[rightPriority];
     return getNotificationTimestamp(right) - getNotificationTimestamp(left);
   });
 }
@@ -72,11 +78,21 @@ function getItemUnreadWeight(item: HeaderNotificationBellItem) {
 }
 
 export function HeaderNotificationBell({
+  hasMore = false,
+  isLoadingMore: externalIsLoadingMore = false,
   items,
   label = "Notifications",
+  onLoadMore,
+  totalCount: externalTotalCount,
+  unreadCount: externalUnreadCount,
 }: {
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
   items: HeaderNotificationBellItem[];
   label?: string;
+  onLoadMore?: () => Promise<void> | void;
+  totalCount?: number;
+  unreadCount?: number;
 }) {
   const pathname = usePathname();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -86,19 +102,38 @@ export function HeaderNotificationBell({
   const uniqueItems = useMemo(() => dedupeNotifications(items), [items]);
   const orderedItems = useMemo(() => sortNotifications(uniqueItems), [uniqueItems]);
   const {
-    handleScroll: handleNotificationListScroll,
-    isLoadingMore,
-    visibleItems,
+    handleScroll: handleLazyNotificationListScroll,
+    isLoadingMore: lazyIsLoadingMore,
+    visibleItems: lazyVisibleItems,
   } = useLazyNotificationList({
     items: orderedItems,
     resetKey: open,
   });
-  const unreadCount = useMemo(
+  const calculatedUnreadCount = useMemo(
     () => uniqueItems.reduce((sum, item) => sum + (item.isRead ? 0 : getItemUnreadWeight(item)), 0),
     [uniqueItems]
   );
+  const unreadCount = externalUnreadCount ?? calculatedUnreadCount;
+  const totalCount = externalTotalCount ?? uniqueItems.length;
+  const isLoadingMore = onLoadMore ? externalIsLoadingMore : lazyIsLoadingMore;
+  const visibleItems = onLoadMore ? orderedItems : lazyVisibleItems;
   const hasUnread = unreadCount > 0;
   const panelId = "header-notification-panel";
+  const handleNotificationListScroll = useCallback(
+    (event: UIEvent<HTMLElement>) => {
+      if (!onLoadMore) {
+        handleLazyNotificationListScroll(event);
+        return;
+      }
+
+      const target = event.currentTarget;
+      const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+      if (hasMore && !externalIsLoadingMore && distanceFromBottom <= 96) {
+        void onLoadMore();
+      }
+    },
+    [externalIsLoadingMore, handleLazyNotificationListScroll, hasMore, onLoadMore]
+  );
 
   useEffect(() => {
     setOpen(false);
@@ -190,7 +225,7 @@ export function HeaderNotificationBell({
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-brand-slate">{label}</p>
                 <p className="mt-1 truncate text-sm font-semibold text-brand-ink">
-                  {uniqueItems.length ? `${uniqueItems.length} notification${uniqueItems.length === 1 ? "" : "s"}` : "No notifications"}
+                  {totalCount ? `${totalCount} notification${totalCount === 1 ? "" : "s"}` : "No notifications"}
                 </p>
               </div>
               {hasUnread ? (

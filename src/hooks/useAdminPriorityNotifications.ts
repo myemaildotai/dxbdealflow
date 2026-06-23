@@ -1,14 +1,21 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useSnackbar } from "notistack";
 import { createAdminListingDetailHref } from "@/lib/admin-navigation";
-import { apiFetch } from "@/lib/deal-api";
-import type { AdminOverview } from "@/lib/deal-types";
+import { markAdminNotificationCachesRead, restoreAdminNotificationCachesItem } from "@/lib/client-cache";
+import { apiFetch, getApiCacheKey } from "@/lib/deal-api";
+import {
+  isAdminPriorityNotificationType,
+  mergeNotificationPages,
+  type NotificationItem,
+  type NotificationsPagePayload,
+} from "@/lib/notifications";
+import { useSessionQuery } from "@/hooks/useSessionQuery";
 
-type SetSessionData<T> = (value: T | null | ((current: T | null) => T | null)) => void;
-type AdminPriorityQueueNotification = AdminOverview["priorityQueue"][number];
+const ADMIN_NOTIFICATION_PATH = "/api/admin/notifications";
+const ADMIN_NOTIFICATION_TTL_MS = 45_000;
 
 export type AdminPriorityQueueItem = {
   id: string;
@@ -24,24 +31,45 @@ function getAdminReturnHref(pathname: string | null) {
   const resolvedPathname = pathname || "/admin";
 
   if (!resolvedPathname.startsWith("/admin") || resolvedPathname.startsWith("/admin/listings/")) {
-    return "/admin?tab=listings";
+    return "/admin/listings";
   }
 
   return resolvedPathname;
 }
 
+function getPriorityNotificationTimestamp(notification: NotificationItem) {
+  const sourceCreatedAt = notification.metadata.sourceCreatedAt;
+  return typeof sourceCreatedAt === "string" && sourceCreatedAt ? sourceCreatedAt : notification.createdAt;
+}
+
 export function useAdminPriorityNotifications({
+  enabled,
   getListingDetailHref,
-  overview,
-  setOverview,
 }: {
+  enabled: boolean;
   getListingDetailHref?: (listingId: string) => string;
-  overview: AdminOverview | null;
-  setOverview: SetSessionData<AdminOverview>;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const { enqueueSnackbar } = useSnackbar();
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const {
+    data: notificationsPayload,
+    loading,
+    setData: setNotificationsPayload,
+  } = useSessionQuery<NotificationsPagePayload>(
+    getApiCacheKey(ADMIN_NOTIFICATION_PATH),
+    () => apiFetch<NotificationsPagePayload>(ADMIN_NOTIFICATION_PATH),
+    {
+      enabled,
+      keepPreviousData: true,
+      ttlMs: ADMIN_NOTIFICATION_TTL_MS,
+      onError: (error) =>
+        enqueueSnackbar(error instanceof Error ? error.message : "Failed to load priority notifications.", {
+          variant: "error",
+        }),
+    }
+  );
 
   const fallbackListingDetailHref = useCallback(
     (listingId: string) => createAdminListingDetailHref(listingId, getAdminReturnHref(pathname)),
@@ -49,101 +77,96 @@ export function useAdminPriorityNotifications({
   );
 
   const markPriorityQueueItemRead = useCallback(
-    async (notification: AdminPriorityQueueNotification) => {
-      if (notification.is_read) {
+    async (notification: NotificationItem) => {
+      if (notification.isRead) {
         return;
       }
 
       const optimisticReadAt = new Date().toISOString();
-
-      setOverview((current) => {
-        if (!current) {
-          return current;
-        }
-
-        return {
-          ...current,
-          priorityQueue: (current.priorityQueue || []).map((item) =>
-            item.id === notification.id ? { ...item, is_read: true, read_at: optimisticReadAt } : item
-          ),
-        };
-      });
+      markAdminNotificationCachesRead(notification.id, optimisticReadAt);
 
       try {
-        const payload = await apiFetch<{ success: true; readAt: string | null }>(`/api/admin/priority-queue/${notification.id}`, {
+        const payload = await apiFetch<{ success: true; readAt: string | null }>(`${ADMIN_NOTIFICATION_PATH}/${notification.id}`, {
           method: "PATCH",
         });
-
-        setOverview((current) => {
-          if (!current) {
-            return current;
-          }
-
-          return {
-            ...current,
-            priorityQueue: (current.priorityQueue || []).map((item) =>
-              item.id === notification.id ? { ...item, is_read: true, read_at: payload.readAt ?? optimisticReadAt } : item
-            ),
-          };
-        });
+        markAdminNotificationCachesRead(notification.id, payload.readAt ?? optimisticReadAt);
       } catch (error) {
-        setOverview((current) => {
-          if (!current) {
-            return current;
-          }
-
-          return {
-            ...current,
-            priorityQueue: (current.priorityQueue || []).map((item) =>
-              item.id === notification.id ? { ...item, is_read: notification.is_read, read_at: notification.read_at } : item
-            ),
-          };
-        });
-
+        restoreAdminNotificationCachesItem(notification);
         enqueueSnackbar(error instanceof Error ? error.message : "Failed to update notification state.", { variant: "error" });
       }
     },
-    [enqueueSnackbar, setOverview]
+    [enqueueSnackbar]
   );
+
+  const loadMorePriorityNotifications = useCallback(async () => {
+    const cursor = notificationsPayload?.nextCursor;
+    if (!cursor || !notificationsPayload?.hasMore || isLoadingMore) {
+      return;
+    }
+
+    setIsLoadingMore(true);
+    try {
+      const nextPage = await apiFetch<NotificationsPagePayload>(
+        `${ADMIN_NOTIFICATION_PATH}?limit=15&cursor=${encodeURIComponent(cursor)}`
+      );
+      setNotificationsPayload((current) => (current ? mergeNotificationPages(current, nextPage) : nextPage));
+    } catch (error) {
+      enqueueSnackbar(error instanceof Error ? error.message : "Failed to load more priority notifications.", {
+        variant: "error",
+      });
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [enqueueSnackbar, isLoadingMore, notificationsPayload, setNotificationsPayload]);
 
   const priorityQueueItems = useMemo<AdminPriorityQueueItem[]>(() => {
     const listingHrefBuilder = getListingDetailHref ?? fallbackListingDetailHref;
 
-    return (overview?.priorityQueue || []).flatMap((notification) => {
-      if (notification.target_type === "broker") {
+    return (notificationsPayload?.notifications || []).flatMap((notification) => {
+      if (!isAdminPriorityNotificationType(notification.type)) {
+        return [];
+      }
+
+      const entityId = notification.entityId;
+      const sentence = notification.message || notification.title;
+
+      if (notification.entityType === "broker" && entityId) {
         return {
           id: notification.id,
-          target_type: notification.target_type,
-          sentence: notification.sentence,
-          isRead: notification.is_read,
-          timestamp: notification.source_created_at || notification.created_at,
+          target_type: notification.entityType,
+          sentence,
+          isRead: notification.isRead,
+          timestamp: getPriorityNotificationTimestamp(notification),
           onMarkAsRead: () => markPriorityQueueItemRead(notification),
-          onOpen: () => router.push(`/admin/brokers/${notification.target_id}`),
+          onOpen: () => router.push(`/admin/brokers/${entityId}`),
         };
       }
 
-      if (notification.target_type === "listing") {
+      if (notification.entityType === "listing" && entityId) {
         return {
           id: notification.id,
-          target_type: notification.target_type,
-          sentence: notification.sentence,
-          isRead: notification.is_read,
-          timestamp: notification.source_created_at || notification.created_at,
+          target_type: notification.entityType,
+          sentence,
+          isRead: notification.isRead,
+          timestamp: getPriorityNotificationTimestamp(notification),
           onMarkAsRead: () => markPriorityQueueItemRead(notification),
-          onOpen: () => router.push(listingHrefBuilder(notification.target_id)),
+          onOpen: () => router.push(listingHrefBuilder(entityId)),
         };
       }
 
       return [];
     });
-  }, [fallbackListingDetailHref, getListingDetailHref, markPriorityQueueItemRead, overview?.priorityQueue, router]);
+  }, [fallbackListingDetailHref, getListingDetailHref, markPriorityQueueItemRead, notificationsPayload?.notifications, router]);
 
   const unreadCount = useMemo(() => priorityQueueItems.filter((item) => !item.isRead).length, [priorityQueueItems]);
 
   return {
-    markPriorityQueueItemRead,
+    hasMorePriorityQueueItems: notificationsPayload?.hasMore || false,
+    isLoadingMorePriorityQueueItems: isLoadingMore,
+    loadMorePriorityQueueItems: loadMorePriorityNotifications,
     priorityQueueItems,
-    priorityQueueTotalCount: priorityQueueItems.length,
+    priorityQueueLoading: loading,
+    priorityQueueTotalCount: notificationsPayload?.priorityTotalCount ?? priorityQueueItems.length,
     unreadCount,
   };
 }

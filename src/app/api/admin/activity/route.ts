@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getActivityFilter } from "@/lib/activity-categories";
 import { getServiceSupabase, jsonError, requireAdmin } from "@/lib/deal-server";
 import { fetchActivityLog } from "@/lib/platform-server-data";
 
@@ -11,7 +12,7 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const page = Number(searchParams.get("page") || "1");
     const pageSize = Number(searchParams.get("pageSize") || "10");
-    const category = searchParams.get("category") || "all";
+    const category = getActivityFilter(searchParams.get("category"));
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
     const search = searchParams.get("search");
@@ -20,9 +21,7 @@ export async function GET(request: NextRequest) {
     const payload = await fetchActivityLog(supabase, {
       page,
       pageSize,
-      category: ["all", "listings", "brokers", "credits", "requirements", "system"].includes(category)
-        ? (category as "all" | "listings" | "brokers" | "credits" | "requirements" | "system")
-        : "all",
+      category,
       startDate,
       endDate,
       searchQuery: search,

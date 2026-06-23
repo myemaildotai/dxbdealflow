@@ -12,6 +12,8 @@ import { normalizeInstagramProfile, normalizeLinkedInProfile } from "@/lib/broke
 import { isValidEmailAddress } from "@/lib/email";
 import { triggerBrokerVerificationSuccessEmail, triggerManualReviewPendingEmail } from "@/lib/email-notifications";
 import { isValidInternationalPhoneNumber, normalizePhoneNumber } from "@/lib/phone";
+import { fetchAdminUserIds } from "@/lib/admin-priority-queue-server";
+import { createAdminNotifications } from "@/lib/notifications-server";
 
 type ApplyRequestBody = {
   authUserId: string;
@@ -479,6 +481,25 @@ export async function POST(request: NextRequest) {
     createdActivityLog = true;
 
     const brokerName = [body.firstName, body.lastName].filter(Boolean).join(" ").trim() || "Broker";
+
+    if (!autoApproved) {
+      try {
+        const adminUserIds = await fetchAdminUserIds(supabase);
+        await createAdminNotifications(supabase, adminUserIds, {
+          actorUserId: body.authUserId,
+          type: "broker_application_pending",
+          title: "Broker approval pending",
+          message: `${brokerName} submitted a broker application for review.`,
+          entityType: "broker",
+          entityId: body.authUserId,
+          href: `/admin/brokers/${body.authUserId}`,
+          metadata: { sourceCreatedAt: submittedAt },
+          createdAt: submittedAt,
+        });
+      } catch {
+        // The admin overview compatibility path will repair any missing pending notification.
+      }
+    }
 
     // Email trigger: auto-approved RERA match or manual-review pending broker application.
     if (autoApproved) {

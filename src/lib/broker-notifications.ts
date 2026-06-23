@@ -1,205 +1,210 @@
-import type {
-  BrokerDashboardData,
-  ChatConversationSummary,
-  Lead,
-  Listing,
-  PrivateChatThreadSummary,
-  RequirementNotification,
-} from "@/lib/deal-types";
-import { formatCurrency, formatPropertyType, getFullName } from "@/lib/deal-utils";
+import type { NotificationItem, NotificationsPagePayload } from "@/lib/notifications";
 
 export type BrokerNotificationType = "requirement" | "enquiry" | "chat" | "listingApproval";
 
 type BrokerNotificationBase = {
   id: string;
   type: BrokerNotificationType;
-  typeLabel: "Requirement" | "Enquiry" | "Chat" | "Listing";
   title: string;
   message: string;
-  senderName: string;
-  senderEmail: string | null;
-  subject: string;
-  badge: string;
+  ariaLabel: string;
   isRead: boolean;
   readAt: string | null;
   createdAt: string;
-  listingId: string | null;
+  href: string;
+  priority: NotificationItem["priority"];
 };
-
-function getChatNotificationUnreadCount(conversation: PrivateChatThreadSummary) {
-  return Math.max(conversation.unreadCount || 0, conversation.hasUnread ? 1 : 0);
-}
 
 export type BrokerNotificationFeedItem =
   | (BrokerNotificationBase & {
       type: "requirement";
-      notification: RequirementNotification;
+      source: {
+        notificationId: string;
+        requirementId: string;
+        requirementTitle: string;
+      };
     })
   | (BrokerNotificationBase & {
       type: "enquiry";
-      lead: Lead;
+      source: {
+        leadId: string;
+        listingId: string | null;
+        listingTitle: string;
+      };
     })
   | (BrokerNotificationBase & {
       type: "chat";
-      conversation: PrivateChatThreadSummary;
-      listing: ChatConversationSummary["listing"];
+      unreadCount: number;
+      source: {
+        conversationId: string;
+        listingId: string;
+        listingTitle: string;
+        lastMessageSequence: number | null;
+        lastReadAt: string | null;
+      };
     })
   | (BrokerNotificationBase & {
       type: "listingApproval";
-      listing: Listing;
+      source: {
+        listingId: string;
+        listingTitle: string;
+      };
     });
 
-function getRequirementFeedItem(notification: RequirementNotification): BrokerNotificationFeedItem {
-  const senderName = notification.match?.sender
-    ? getFullName(notification.match.sender.first_name, notification.match.sender.last_name) || "Broker response"
-    : "Broker response";
-  const subject = notification.match?.listing?.title || notification.requirement?.title || "Requirement notification";
-  const badge = notification.match?.listing?.price
-    ? formatCurrency(notification.match.listing.price)
-    : notification.requirement?.property_type
-      ? formatPropertyType(notification.requirement.property_type)
-      : "Requirement";
+export type BrokerNotificationsPayload = NotificationsPagePayload;
 
-  return {
-    id: `requirement:${notification.id}`,
-    type: "requirement",
-    typeLabel: "Requirement",
-    title: notification.title || "Requirement notification",
-    message: notification.match?.message || notification.message || "Message unavailable.",
-    senderName,
-    senderEmail: notification.match?.sender?.email || null,
-    subject,
-    badge,
-    isRead: notification.is_read,
-    readAt: notification.read_at,
-    createdAt: notification.created_at,
-    listingId: notification.match?.listing_id || notification.listing_id || null,
-    notification,
+// Retained for compatibility with legacy dashboard helpers while notification reads move to the unified table.
+export type BrokerListingApprovalNotificationSource = {
+  id: string;
+  title: string;
+  approvedAt: string;
+  approvalReadAt: string | null;
+};
+
+export type BrokerEnquiryNotificationSource = {
+  id: string;
+  listingId: string | null;
+  listingTitle: string | null;
+  contactName: string;
+  isRead: boolean;
+  readAt: string | null;
+  createdAt: string;
+};
+
+export type BrokerChatNotificationSource = {
+  conversationId: string;
+  listingId: string;
+  listingTitle: string;
+  participantFirstName: string | null;
+  participantLastName: string | null;
+  unreadCount: number;
+  lastActivityAt: string;
+  lastMessageSequence: number | null;
+  lastReadAt: string | null;
+};
+
+export type BrokerRequirementNotificationSource = {
+  id: string;
+  requirementId: string;
+  requirementTitle: string | null;
+  actorFirstName: string | null;
+  actorLastName: string | null;
+  isRead: boolean;
+  readAt: string | null;
+  createdAt: string;
+};
+
+function readMetadataString(notification: NotificationItem, key: string) {
+  const value = notification.metadata[key];
+  return typeof value === "string" ? value : null;
+}
+
+function readMetadataNumber(notification: NotificationItem, key: string) {
+  const value = notification.metadata[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function mapBrokerNotification(notification: NotificationItem): BrokerNotificationFeedItem | null {
+  const base = {
+    id: notification.id,
+    title: notification.title,
+    message: notification.message || "",
+    ariaLabel: [notification.title, notification.message].filter(Boolean).join(" "),
+    isRead: notification.isRead,
+    readAt: notification.readAt,
+    createdAt: notification.createdAt,
+    href: notification.href || "/dashboard",
+    priority: notification.priority,
   };
-}
 
-function getEnquiryFeedItem(lead: Lead): BrokerNotificationFeedItem {
-  const subject = lead.listing?.title || "General enquiry";
-  const badge = lead.listing?.price ? formatCurrency(lead.listing.price) : lead.preferred_channel === "both"
-    ? "Email + WA"
-    : lead.preferred_channel === "whatsapp"
-      ? "WhatsApp"
-      : "Email";
+  if (notification.type === "requirement_match_found") {
+    const requirementId = readMetadataString(notification, "requirementId") || notification.entityId;
+    if (!requirementId) return null;
 
-  return {
-    id: `enquiry:${lead.id}`,
-    type: "enquiry",
-    typeLabel: "Enquiry",
-    title: "Public enquiry received",
-    message: lead.message || "No message provided.",
-    senderName: lead.contact_name,
-    senderEmail: lead.contact_email,
-    subject,
-    badge,
-    isRead: Boolean(lead.is_read),
-    readAt: lead.read_at ?? null,
-    createdAt: lead.created_at,
-    listingId: lead.listing_id,
-    lead,
-  };
-}
-
-function getChatFeedItem(
-  listing: ChatConversationSummary["listing"],
-  conversation: PrivateChatThreadSummary
-): BrokerNotificationFeedItem {
-  const senderName = conversation.participant
-    ? getFullName(conversation.participant.first_name, conversation.participant.last_name) || "Broker"
-    : "Broker";
-  const unreadCount = getChatNotificationUnreadCount(conversation);
-
-  return {
-    id: `chat:${conversation.conversationId}`,
-    type: "chat",
-    typeLabel: "Chat",
-    title: unreadCount > 1 ? `${unreadCount} unread chat messages` : conversation.hasUnread ? "Unread chat message" : "Chat activity update",
-    message: conversation.lastMessage?.content || "No messages yet.",
-    senderName,
-    senderEmail: conversation.participant?.email || null,
-    subject: listing.title,
-    badge: unreadCount > 0 ? `${unreadCount} new` : `${conversation.messageCount} msg${conversation.messageCount === 1 ? "" : "s"}`,
-    isRead: !conversation.hasUnread,
-    readAt: conversation.lastReadAt || (!conversation.hasUnread ? conversation.lastActivityAt || null : null),
-    createdAt: conversation.lastActivityAt || conversation.lastMessage?.created_at || "",
-    listingId: listing.id,
-    conversation,
-    listing,
-  };
-}
-
-function isIncomingUnreadChat(conversation: PrivateChatThreadSummary, currentBrokerUserId: string | null) {
-  return Boolean(
-    currentBrokerUserId &&
-      getChatNotificationUnreadCount(conversation) > 0 &&
-      conversation.lastMessage &&
-      conversation.lastMessage.sender_id !== currentBrokerUserId
-  );
-}
-
-function isListingApprovalRead(listing: Listing) {
-  if (!listing.approved_at) {
-    return true;
+    return {
+      ...base,
+      type: "requirement",
+      source: {
+        notificationId: notification.id,
+        requirementId,
+        requirementTitle: readMetadataString(notification, "requirementTitle") || "Requirement notification",
+      },
+    };
   }
 
-  if (!listing.approval_notification_read_at) {
-    return false;
+  if (notification.type === "public_enquiry_received") {
+    const leadId = readMetadataString(notification, "leadId") || notification.entityId;
+    if (!leadId) return null;
+
+    return {
+      ...base,
+      type: "enquiry",
+      source: {
+        leadId,
+        listingId: readMetadataString(notification, "listingId"),
+        listingTitle: readMetadataString(notification, "listingTitle") || "your listing",
+      },
+    };
   }
 
-  return listing.approval_notification_read_at.localeCompare(listing.approved_at) >= 0;
+  if (notification.type === "chat_message_received") {
+    const conversationId = readMetadataString(notification, "conversationId") || notification.entityId;
+    if (!conversationId) return null;
+
+    return {
+      ...base,
+      type: "chat",
+      unreadCount: Math.max(readMetadataNumber(notification, "unreadCount") || 1, 1),
+      source: {
+        conversationId,
+        listingId: readMetadataString(notification, "listingId") || "",
+        listingTitle: readMetadataString(notification, "listingTitle") || "a listing",
+        lastMessageSequence: readMetadataNumber(notification, "lastMessageSequence"),
+        lastReadAt: null,
+      },
+    };
+  }
+
+  if (notification.type === "listing_approved") {
+    const listingId = readMetadataString(notification, "listingId") || notification.entityId;
+    if (!listingId) return null;
+
+    return {
+      ...base,
+      type: "listingApproval",
+      source: {
+        listingId,
+        listingTitle: readMetadataString(notification, "listingTitle") || notification.title,
+      },
+    };
+  }
+
+  return null;
 }
 
-function getListingApprovalFeedItem(listing: Listing): BrokerNotificationFeedItem {
-  const badge = listing.price ? formatCurrency(listing.price) : formatPropertyType(listing.property_type);
+export function sortBrokerNotificationFeed(items: BrokerNotificationFeedItem[]) {
+  const priorityRank = { urgent: 0, high: 1, normal: 2, low: 3 };
 
-  return {
-    id: `listingApproval:${listing.id}`,
-    type: "listingApproval",
-    typeLabel: "Listing",
-    title: "Listing approved by admin",
-    message: `${listing.title} is now approved and ready in your broker dashboard.`,
-    senderName: "Admin team",
-    senderEmail: null,
-    subject: listing.title,
-    badge,
-    isRead: isListingApprovalRead(listing),
-    readAt: listing.approval_notification_read_at ?? null,
-    createdAt: listing.approved_at || listing.updated_at,
-    listingId: listing.id,
-    listing,
-  };
+  return [...items].sort((left, right) => {
+    if (left.isRead !== right.isRead) return left.isRead ? 1 : -1;
+    if (left.priority !== right.priority) return priorityRank[left.priority] - priorityRank[right.priority];
+    return right.createdAt.localeCompare(left.createdAt);
+  });
 }
 
-export function buildBrokerNotificationFeed(dashboard: BrokerDashboardData): BrokerNotificationFeedItem[] {
-  const requirementItems = dashboard.requirementNotifications.map(getRequirementFeedItem);
-  const enquiryItems = dashboard.enquiries.map(getEnquiryFeedItem);
-  const currentBrokerUserId = dashboard.profile?.id ?? null;
-  const chatItems = dashboard.chats.flatMap((group) =>
-    group.conversations
-      .filter((conversation) => isIncomingUnreadChat(conversation, currentBrokerUserId))
-      .map((conversation) => getChatFeedItem(group.listing, conversation))
+export function buildBrokerNotificationFeed(items: NotificationItem[]) {
+  return sortBrokerNotificationFeed(
+    items.flatMap((notification) => {
+      const mapped = mapBrokerNotification(notification);
+      return mapped ? [mapped] : [];
+    })
   );
-  const listingApprovalItems = dashboard.listings
-    .filter((listing) => Boolean(listing.approved_at))
-    .map(getListingApprovalFeedItem);
-
-  return [...requirementItems, ...enquiryItems, ...chatItems, ...listingApprovalItems];
 }
 
 export function countUnreadBrokerNotifications(notifications: BrokerNotificationFeedItem[]) {
-  return notifications.reduce((sum, notification) => {
-    if (notification.isRead) {
-      return sum;
-    }
-
-    if (notification.type === "chat") {
-      return sum + getChatNotificationUnreadCount(notification.conversation);
-    }
-
-    return sum + 1;
-  }, 0);
+  return notifications.reduce(
+    (sum, notification) =>
+      sum + (notification.isRead ? 0 : notification.type === "chat" ? Math.max(notification.unreadCount, 1) : 1),
+    0
+  );
 }

@@ -1,5 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  createEmptyActivityCategoryCounts,
+  getActivityCategory,
+  NON_CHAT_ACTIVITY_OR_FILTER,
+  SYSTEM_ACTIVITY_OR_FILTER,
+  type ActivityFilterId,
+} from "@/lib/activity-categories";
+import {
   AGENCY_SELECT,
   AREA_SELECT,
   BROKER_PROFILE_SELECT,
@@ -21,6 +28,7 @@ import type {
   Agency,
   AdminEnquiry,
   Area,
+  BrokerChatNavigationSummary,
   BrokerProfile,
   BrokerEnquiry,
   ChatConversationSummary,
@@ -37,12 +45,10 @@ import type {
   RequirementMatch,
 } from "@/lib/deal-types";
 
-type ActivityCategory = "all" | "listings" | "brokers" | "credits" | "requirements" | "system";
-
 type FetchActivityLogOptions = {
   page?: number;
   pageSize?: number;
-  category?: ActivityCategory;
+  category?: ActivityFilterId;
   startDate?: string | null;
   endDate?: string | null;
   searchQuery?: string | null;
@@ -77,7 +83,7 @@ type ActivityLogListQuery = ActivityCategoryFilterQuery & {
 };
 
 function excludeChatActivity<T extends ActivityCategoryFilterQuery>(query: T) {
-  return query.or("target_table.is.null,target_table.not.in.(chat_conversations,chat_conversation_messages,chat_messages)") as T;
+  return query.or(NON_CHAT_ACTIVITY_OR_FILTER) as T;
 }
 
 function applyActivityDateFilters<T extends ActivityDateFilterQuery>(
@@ -98,7 +104,7 @@ function applyActivityDateFilters<T extends ActivityDateFilterQuery>(
   return nextQuery;
 }
 
-function applyActivityCategoryFilter<T extends ActivityCategoryFilterQuery>(query: T, category?: ActivityCategory) {
+function applyActivityCategoryFilter<T extends ActivityCategoryFilterQuery>(query: T, category?: ActivityFilterId) {
   switch (category) {
     case "listings":
       return query.eq("target_table", "listings") as T;
@@ -109,7 +115,7 @@ function applyActivityCategoryFilter<T extends ActivityCategoryFilterQuery>(quer
     case "requirements":
       return query.or("target_table.in.(requirements,requirement_matches)") as T;
     case "system":
-      return query.or("target_table.is.null,target_table.in.(leads,settings)") as T;
+      return query.or(SYSTEM_ACTIVITY_OR_FILTER) as T;
     default:
       return excludeChatActivity(query);
   }
@@ -120,8 +126,14 @@ export async function fetchAreas(supabase: SupabaseClient): Promise<Area[]> {
   return (data as Area[]) || [];
 }
 
-export async function fetchUserBundle(supabase: SupabaseClient, userId: string) {
-  const { data: user } = await supabase.from("users").select(USER_SELECT).eq("id", userId).maybeSingle();
+export async function fetchUserBundle(supabase: SupabaseClient, userId: string, knownUser?: PlatformUser | null) {
+  let user = knownUser?.id === userId ? knownUser : null;
+
+  if (!user) {
+    const { data } = await supabase.from("users").select(USER_SELECT).eq("id", userId).maybeSingle();
+    user = data as PlatformUser | null;
+  }
+
   if (!user) {
     return { user: null, brokerProfile: null, agency: null, credits: null };
   }
@@ -177,6 +189,7 @@ export async function fetchChatUserSummaries(supabase: SupabaseClient, userIds: 
 
 type HydrateListingsOptions = {
   includeAgencies?: boolean;
+  includeAreas?: boolean;
   includeCommissionTerms?: boolean;
   includeImages?: boolean;
   includeOwnerActiveCount?: boolean;
@@ -188,6 +201,7 @@ export async function hydrateListings(
   listings: Listing[],
   {
     includeAgencies = true,
+    includeAreas = true,
     includeCommissionTerms = true,
     includeImages = true,
     includeOwnerActiveCount = true,
@@ -202,7 +216,7 @@ export async function hydrateListings(
   const listingIds = listings.map((listing) => listing.id);
 
   const [areasResult, ownersResult, agenciesResult, termsResult, imagesResult, activeListingsResult] = await Promise.all([
-    areaIds.length
+    includeAreas && areaIds.length
       ? supabase.from("areas").select(AREA_SELECT).in("id", areaIds)
       : Promise.resolve({ data: [] as Area[] }),
     includeOwners && ownerIds.length
@@ -249,7 +263,11 @@ export async function hydrateListings(
 
   return listings.map((listing) => ({
     ...listing,
-    area: listing.area_id ? areaMap.get(listing.area_id) || null : null,
+    area: includeAreas
+      ? listing.area_id
+        ? areaMap.get(listing.area_id) || null
+        : null
+      : listing.area || null,
     owner: ownerMap.get(listing.created_by) || null,
     agency: listing.agency_id ? agencyMap.get(listing.agency_id) || null : null,
     commission_terms: termsMap.get(listing.id) || null,
@@ -290,6 +308,7 @@ type BrokerConversationRow = {
 type FetchBrokerChatSummariesOptions = {
   includeMessages?: boolean;
   includeRequirementContext?: boolean;
+  conversationCounts?: BrokerChatConversationCounts;
   filter?: BrokerChatConversationFilter;
   limit?: number;
   cursor?: BrokerChatConversationCursor | null;
@@ -433,7 +452,7 @@ export async function fetchBrokerChatSummaries(
   return page.groups;
 }
 
-async function fetchBrokerChatConversationCounts(
+export async function fetchBrokerChatConversationCounts(
   supabase: SupabaseClient,
   userId: string
 ): Promise<BrokerChatConversationCounts> {
@@ -475,6 +494,44 @@ function parseBrokerChatSummaryMessages(value: BrokerChatConversationPageRow["me
   return [];
 }
 
+export async function fetchBrokerChatNavigationSummaries(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<BrokerChatNavigationSummary[]> {
+  const { data, error } = await supabase
+    .from("chat_conversations")
+    .select("id, listing_id")
+    .or(`owner_user_id.eq.${userId},broker_user_id.eq.${userId}`)
+    .not("last_message_id", "is", null)
+    .order("last_message_sequence", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(51);
+
+  if (error) {
+    throw new Error(error.message || "Failed to fetch conversations.");
+  }
+
+  const conversations = (data as Array<{ id: string; listing_id: string }> | null) || [];
+  const grouped = new Map<string, BrokerChatNavigationSummary>();
+
+  conversations.forEach((conversation) => {
+    const summary = grouped.get(conversation.listing_id) || {
+      listing: {
+        id: conversation.listing_id,
+      },
+      conversations: [],
+    };
+
+    summary.conversations.push({
+      conversationId: conversation.id,
+    });
+
+    grouped.set(conversation.listing_id, summary);
+  });
+
+  return Array.from(grouped.values());
+}
+
 export async function fetchBrokerChatSummariesPage(
   supabase: SupabaseClient,
   userId: string,
@@ -498,7 +555,7 @@ export async function fetchBrokerChatSummariesPage(
       p_cursor_id: options.cursor?.id ?? null,
       p_message_limit: summaryMessageLimit,
     }),
-    fetchBrokerChatConversationCounts(supabase, userId),
+    options.conversationCounts ? Promise.resolve(options.conversationCounts) : fetchBrokerChatConversationCounts(supabase, userId),
   ]);
   const { data: conversationRows, error } = conversationResult;
 
@@ -523,36 +580,40 @@ export async function fetchBrokerChatSummariesPage(
     )
   );
   const conversationMap = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+  const messages = conversations.flatMap((conversation) =>
+    parseBrokerChatSummaryMessages(conversation.messages).map((message) => ({
+      ...message,
+      listing_id: conversationMap.get(message.conversation_id || "")?.listing_id || "",
+    }))
+  ) as ChatMessage[];
+  const chatUserIds = uniqueActivityIds([...participantIds, ...messages.map((message) => message.sender_id)]);
 
-  const [listingRows, participants, brokerProfileIdByUserId] = await Promise.all([
+  const [listingRows, chatUsers, brokerProfileIdByUserId] = await Promise.all([
     supabase
       .from("listings")
       .select(
-        "id, title, property_type, deal_type, bedrooms, size_sqft, area_id, developer, price, payment_plan, handover_date, yield_percent, property_video_url, notes, description, status, is_visible, created_at, updated_at, deleted_at, created_by, agency_id, renewal_due_at, approved_at, credits_used"
+        `id, title, property_type, deal_type, bedrooms, size_sqft, area_id, developer, price, payment_plan, handover_date, yield_percent, property_video_url, notes, description, status, is_visible, created_at, updated_at, deleted_at, created_by, agency_id, renewal_due_at, approved_at, credits_used, area:areas(${AREA_SELECT})`
       )
       .in("id", listingIds),
-    fetchChatUserSummaries(supabase, participantIds),
-    fetchBrokerProfileIdsByUserId(supabase, conversationUserIds),
+    fetchChatUserSummaries(supabase, chatUserIds),
+    options.includeRequirementContext
+      ? fetchBrokerProfileIdsByUserId(supabase, conversationUserIds)
+      : Promise.resolve(new Map<string, string>()),
   ]);
 
-  const listings = await hydrateListings(supabase, (listingRows.data as Listing[]) || []);
+  const listings = (listingRows.data as unknown as Listing[]) || [];
   const listingMap = new Map(listings.map((listing) => [listing.id, listing]));
-  const participantMap = new Map(participants.map((user) => [user.id, user]));
+  const chatUserMap = new Map(chatUsers.map((user) => [user.id, user]));
   const requirementContextByConversationId = options.includeRequirementContext
     ? await fetchRequirementMatchThreadContexts(supabase, conversations, brokerProfileIdByUserId)
     : new Map<string, RequirementMatchThreadContext>();
-  const messages = await hydrateMessages(
-    supabase,
-    conversations.flatMap((conversation) =>
-      parseBrokerChatSummaryMessages(conversation.messages).map((message) => ({
-        ...message,
-        listing_id: conversationMap.get(message.conversation_id || "")?.listing_id || "",
-      }))
-    ) as ChatMessage[]
-  );
+  const hydratedMessages = messages.map((message) => ({
+    ...message,
+    sender: chatUserMap.get(message.sender_id) || null,
+  }));
 
   const messagesByConversation = new Map<string, ChatMessage[]>();
-  messages.forEach((message) => {
+  hydratedMessages.forEach((message) => {
     const key = message.conversation_id || "";
     messagesByConversation.set(key, [...(messagesByConversation.get(key) || []), message]);
   });
@@ -610,7 +671,7 @@ export async function fetchBrokerChatSummariesPage(
 
     const threadSummary = {
       conversationId: conversation.id,
-      participant: participantMap.get(conversation.participant_user_id || participantId) || null,
+      participant: chatUserMap.get(conversation.participant_user_id || participantId) || null,
       lastMessage,
       lastActivityAt,
       hasUnread,
@@ -827,27 +888,45 @@ function getReplyActivityDate(reply: Pick<EnquiryReply, "sent_at" | "created_at"
 export async function hydrateBrokerEnquiries(
   supabase: SupabaseClient,
   enquiries: Lead[],
-  brokerId: string
+  brokerId: string,
+  { listingsHydrated = false }: { listingsHydrated?: boolean } = {}
 ): Promise<BrokerEnquiry[]> {
   if (!enquiries.length) return [];
 
-  const hydratedEnquiries = await hydrateEnquiries(supabase, enquiries);
-  const enquiryIds = hydratedEnquiries.map((enquiry) => enquiry.id);
-  const { data: replies } = enquiryIds.length
-    ? await supabase
-        .from("enquiry_replies")
-        .select("id, enquiry_id, listing_id, broker_id, enquirer_email, subject, message, sent_at, status, failure_reason, created_at")
-        .in("enquiry_id", enquiryIds)
-        .eq("broker_id", brokerId)
-        .order("created_at", { ascending: false })
-    : { data: [] as EnquiryReply[] };
+  const enquiryIds = enquiries.map((enquiry) => enquiry.id);
+  const listingIds = Array.from(new Set(enquiries.map((enquiry) => enquiry.listing_id).filter(Boolean))) as string[];
+  const [listingsResult, repliesResult] = await Promise.all([
+    listingsHydrated
+      ? Promise.resolve({
+          data: enquiries.map((enquiry) => enquiry.listing).filter(Boolean) as Array<
+            Pick<Listing, "id" | "title" | "price" | "property_type" | "status" | "deleted_at">
+          >,
+        })
+      : listingIds.length
+      ? supabase.from("listings").select("id, title, price, property_type, status, deleted_at").in("id", listingIds)
+      : Promise.resolve({ data: [] as Array<Pick<Listing, "id" | "title" | "price" | "property_type" | "status" | "deleted_at">> }),
+    enquiryIds.length
+      ? supabase
+          .from("enquiry_replies")
+          .select("id, enquiry_id, listing_id, broker_id, enquirer_email, subject, message, sent_at, status, failure_reason, created_at")
+          .in("enquiry_id", enquiryIds)
+          .eq("broker_id", brokerId)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] as EnquiryReply[] }),
+  ]);
+  const listingMap = new Map(
+    ((listingsResult.data || []) as Array<Pick<Listing, "id" | "title" | "price" | "property_type" | "status" | "deleted_at">>).map(
+      (listing) => [listing.id, listing]
+    )
+  );
+  const replies = repliesResult.data;
   const repliesByEnquiryId = new Map<string, EnquiryReply[]>();
 
   ((replies as EnquiryReply[] | null) || []).forEach((reply) => {
     repliesByEnquiryId.set(reply.enquiry_id, [...(repliesByEnquiryId.get(reply.enquiry_id) || []), reply]);
   });
 
-  return hydratedEnquiries.map((enquiry) => {
+  return enquiries.map((enquiry) => {
     const enquiryReplies = repliesByEnquiryId.get(enquiry.id) || [];
     const latestReply = enquiryReplies.reduce<EnquiryReply | null>((latest, reply) => {
       if (!latest) return reply;
@@ -857,6 +936,7 @@ export async function hydrateBrokerEnquiries(
 
     return {
       ...enquiry,
+      listing: enquiry.listing_id ? listingMap.get(enquiry.listing_id) || null : null,
       replies: enquiryReplies,
       reply_count: enquiryReplies.length,
       latest_reply_at: latestReply ? getReplyActivityDate(latestReply) : null,
@@ -1105,6 +1185,41 @@ async function hydrateActivityRequirementMatches(
   });
 }
 
+async function hydrateActivityListingSummaries(supabase: SupabaseClient, listingIds: string[]) {
+  const uniqueListingIds = uniqueActivityIds(listingIds);
+  if (!uniqueListingIds.length) {
+    return new Map<string, NonNullable<ActivityLog["listing"]>>();
+  }
+
+  const { data: listingRows } = await supabase
+    .from("listings")
+    .select("id, title, property_type, price, status, bedrooms, area_id, deleted_at")
+    .in("id", uniqueListingIds);
+  const listings =
+    ((listingRows as Array<Pick<Listing, "id" | "title" | "property_type" | "price" | "status" | "bedrooms" | "area_id" | "deleted_at">> | null) || []);
+  const areaIds = uniqueActivityIds(listings.map((listing) => listing.area_id));
+  const { data: areaRows } = areaIds.length
+    ? await supabase.from("areas").select("id, name, city").in("id", areaIds)
+    : { data: [] as Array<Pick<Area, "id" | "name" | "city">> };
+  const areaMap = new Map(((areaRows as Array<Pick<Area, "id" | "name" | "city">> | null) || []).map((area) => [area.id, area]));
+
+  return new Map(
+    listings.map((listing) => [
+      listing.id,
+      {
+        id: listing.id,
+        title: listing.title,
+        property_type: listing.property_type,
+        price: listing.price,
+        status: listing.status,
+        bedrooms: listing.bedrooms,
+        deleted_at: listing.deleted_at || null,
+        area: listing.area_id ? areaMap.get(listing.area_id) || null : null,
+      },
+    ])
+  );
+}
+
 export async function hydrateActivityLogs(
   supabase: SupabaseClient,
   logs: ActivityLogHydrationRow[]
@@ -1121,40 +1236,76 @@ export async function hydrateActivityLogs(
       .filter((log) => log.target_table === "requirement_matches" && log.target_id)
       .map((log) => log.target_id)
   );
+  const targetUserIdsFromTarget = uniqueActivityIds(
+    resolvedLogs
+      .filter((log) => (log.target_table === "users" || log.target_table === "broker_credits") && log.target_id)
+      .map((log) => log.target_id)
+  );
+  const targetBrokerProfileIds = uniqueActivityIds(
+    resolvedLogs
+      .filter((log) => log.target_table === "broker_profiles" && log.target_id)
+      .map((log) => log.target_id)
+  );
+  const directListingIds = uniqueActivityIds([
+    ...resolvedLogs
+      .filter((log) => log.target_table === "listings" && log.target_id)
+      .map((log) => log.target_id),
+    ...resolvedLogs.map((log) => getActivityLogMetadataString(log.metadata, "listingId", "listing_id")),
+  ]);
 
-  const { data: actors } = actorIds.length
-    ? await supabase.from("users").select("id, email, first_name, last_name, role").in("id", actorIds)
-    : { data: [] as Array<Pick<PlatformUser, "id" | "email" | "first_name" | "last_name" | "role">> };
+  const [actorsResult, leadRowsResult, requirementMatchRowsResult, targetProfilesResult, listingSummaryMap] = await Promise.all([
+    actorIds.length
+      ? supabase.from("users").select("id, email, first_name, last_name, role").in("id", actorIds)
+      : Promise.resolve({ data: [] as Array<Pick<PlatformUser, "id" | "email" | "first_name" | "last_name" | "role">> }),
+    leadIds.length
+      ? supabase
+          .from("leads")
+          .select(LEAD_SELECT)
+          .in("id", leadIds)
+      : Promise.resolve({ data: [] as Lead[] }),
+    requirementMatchIds.length
+      ? supabase
+          .from("requirement_matches")
+          .select(REQUIREMENT_MATCH_SELECT)
+          .in("id", requirementMatchIds)
+      : Promise.resolve({ data: [] as RequirementMatch[] }),
+    targetBrokerProfileIds.length
+      ? supabase.from("broker_profiles").select("id, user_id").in("id", targetBrokerProfileIds)
+      : Promise.resolve({ data: [] as Array<Pick<BrokerProfile, "id" | "user_id">> }),
+    hydrateActivityListingSummaries(supabase, directListingIds),
+  ]);
 
-  const { data: leadRows } = leadIds.length
-    ? await supabase
-        .from("leads")
-        .select(LEAD_SELECT)
-        .in("id", leadIds)
-    : { data: [] as Lead[] };
-
-  const { data: requirementMatchRows } = requirementMatchIds.length
-    ? await supabase
-        .from("requirement_matches")
-        .select(REQUIREMENT_MATCH_SELECT)
-        .in("id", requirementMatchIds)
-    : { data: [] as RequirementMatch[] };
-
-  const requirementMatches = (requirementMatchRows as RequirementMatch[] | null) || [];
+  const actors = actorsResult.data || [];
+  const leadRows = (leadRowsResult.data as Lead[] | null) || [];
+  const targetProfiles = ((targetProfilesResult.data as Array<Pick<BrokerProfile, "id" | "user_id">> | null) || []).filter(
+    (profile): profile is Pick<BrokerProfile, "id" | "user_id"> & { id: string } => !!profile.id
+  );
+  const targetProfileUserMap = new Map(targetProfiles.map((profile) => [profile.id, profile.user_id]));
+  const targetUserIds = uniqueActivityIds([...targetUserIdsFromTarget, ...targetProfiles.map((profile) => profile.user_id)]);
+  const { data: targetUsers } = targetUserIds.length
+    ? await supabase.from("users").select("id, email, first_name, last_name, role, status").in("id", targetUserIds)
+    : { data: [] as Array<Pick<PlatformUser, "id" | "email" | "first_name" | "last_name" | "role" | "status">> };
+  const requirementMatches = (requirementMatchRowsResult.data as RequirementMatch[] | null) || [];
   const requirementIds = uniqueActivityIds([
     ...resolvedLogs
       .filter((log) => log.target_table === "requirements" && log.target_id)
       .map((log) => log.target_id),
     ...resolvedLogs.map((log) => getActivityLogMetadataString(log.metadata, "requirementId", "requirement_id")),
-    ...((leadRows as Lead[] | null) || []).map((lead) => lead.requirement_id),
+    ...leadRows.map((lead) => lead.requirement_id),
     ...requirementMatches.map((match) => match.requirement_id),
   ]);
-  const hydratedLeads = await hydrateEnquiries(supabase, (leadRows as Lead[] | null) || []);
+  const hydratedLeads = await hydrateEnquiries(supabase, leadRows);
   const hydratedRequirements = await hydrateActivityRequirements(supabase, requirementIds);
   const requirementMap = new Map(hydratedRequirements.map((requirement) => [requirement.id, requirement]));
   const hydratedRequirementMatches = await hydrateActivityRequirementMatches(supabase, requirementMatches, requirementMap);
 
   const actorMap = new Map((actors || []).map((actor) => [actor.id, actor]));
+  const targetUserMap = new Map(
+    (((targetUsers as Array<Pick<PlatformUser, "id" | "email" | "first_name" | "last_name" | "role" | "status">> | null) || []).map((user) => [
+      user.id,
+      user,
+    ]))
+  );
   const leadMap = new Map(hydratedLeads.map((lead) => [lead.id, lead]));
   const requirementMatchMap = new Map(hydratedRequirementMatches.map((match) => [match.id, match]));
 
@@ -1164,10 +1315,22 @@ export async function hydrateActivityLogs(
       log.target_table === "requirements" && log.target_id
         ? log.target_id
         : requirementMatch?.requirement_id || getActivityLogMetadataString(log.metadata, "requirementId", "requirement_id");
+    const listingId =
+      log.target_table === "listings" && log.target_id
+        ? log.target_id
+        : getActivityLogMetadataString(log.metadata, "listingId", "listing_id");
+    const targetUserId =
+      log.target_table === "broker_profiles" && log.target_id
+        ? targetProfileUserMap.get(log.target_id) || null
+        : log.target_table === "users" || log.target_table === "broker_credits"
+          ? log.target_id
+          : null;
 
     return {
       ...(log as ActivityLog),
       actor: log.actor_user_id ? actorMap.get(log.actor_user_id) || null : null,
+      targetUser: targetUserId ? targetUserMap.get(targetUserId) || null : null,
+      listing: listingId ? listingSummaryMap.get(listingId) || null : null,
       lead: log.target_table === "leads" && log.target_id ? leadMap.get(log.target_id) || null : null,
       requirement: requirementId ? requirementMap.get(requirementId) || null : null,
       requirementMatch,
@@ -1274,30 +1437,12 @@ function getActivityLogSearchText(log: ActivityLog, listingMap: Map<string, List
   ]);
 }
 
-function getActivityLogCategoryCountKey(log: Pick<ActivityLog, "target_table">): Exclude<ActivityCategory, "all"> | null {
-  if (log.target_table === "listings") return "listings";
-  if (log.target_table === "users" || log.target_table === "broker_profiles") return "brokers";
-  if (log.target_table === "broker_credits") return "credits";
-  if (log.target_table === "requirements" || log.target_table === "requirement_matches") return "requirements";
-  if (log.target_table === null || log.target_table === "leads" || log.target_table === "settings") return "system";
-  return null;
-}
-
 function getActivityLogCategoryCounts(logs: ActivityLog[]): AdminActivityResponse["categoryCounts"] {
-  const counts: AdminActivityResponse["categoryCounts"] = {
-    all: logs.length,
-    listings: 0,
-    brokers: 0,
-    credits: 0,
-    requirements: 0,
-    system: 0,
-  };
+  const counts = createEmptyActivityCategoryCounts();
+  counts.all = logs.length;
 
   logs.forEach((log) => {
-    const category = getActivityLogCategoryCountKey(log);
-    if (category) {
-      counts[category] += 1;
-    }
+    counts[getActivityCategory(log)] += 1;
   });
 
   return counts;
@@ -1314,7 +1459,7 @@ export async function fetchActivityLog(
   const includeCounts = options.includeCounts !== false;
   const normalizedSearchQuery = normalizeSearchQuery(options.searchQuery);
 
-  const buildActivityListQuery = (category?: ActivityCategory) =>
+  const buildActivityListQuery = (category?: ActivityFilterId) =>
     applyActivityCategoryFilter(
       applyActivityDateFilters(
         excludeChatActivity(
@@ -1330,16 +1475,9 @@ export async function fetchActivityLog(
     );
 
   const logsQuery = buildActivityListQuery(options.category);
-  const emptyCategoryCounts: AdminActivityResponse["categoryCounts"] = {
-    all: 0,
-    listings: 0,
-    brokers: 0,
-    credits: 0,
-    requirements: 0,
-    system: 0,
-  };
+  const emptyCategoryCounts = createEmptyActivityCategoryCounts();
 
-  const buildCountQuery = (category: ActivityCategory) =>
+  const buildCountQuery = (category: ActivityFilterId) =>
     applyActivityCategoryFilter(
       applyActivityDateFilters(
         excludeChatActivity(supabase.from("activity_log").select("id", { count: "exact", head: true }) as unknown as ActivityCategoryFilterQuery),
@@ -1393,13 +1531,13 @@ export async function fetchActivityLog(
     const searchCategoryCounts = getActivityLogCategoryCounts(matchedLogs);
     const categoryMatchedLogs =
       options.category && options.category !== "all"
-        ? matchedLogs.filter((log) => getActivityLogCategoryCountKey(log) === options.category)
+        ? matchedLogs.filter((log) => getActivityCategory(log) === options.category)
         : matchedLogs;
     const activity = categoryMatchedLogs.slice(rangeFrom, rangeTo + 1);
 
     return {
       activity,
-      totalCount: categoryCounts.all,
+      totalCount: searchCategoryCounts.all,
       filteredCount: categoryMatchedLogs.length,
       page,
       pageSize,

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { useSnackbar } from "notistack";
 import { AdminDashboardDateFilterValue, matchesAdminDashboardDateRange } from "@/app/admin/_components/AdminDashboardDateFilter";
 import {
   ADMIN_TABLE_BODY_TEXT_CLASS,
@@ -21,17 +22,46 @@ import {
 import { ListPaginationControls } from "@/components/ListPaginationControls";
 import { ResponsiveRowActionsMenu, type ResponsiveRowAction } from "@/components/ResponsiveRowActionsMenu";
 import { SearchField } from "@/components/SearchField";
+import { SkeletonBlock } from "@/components/SkeletonBlock";
 import { useClientPagination } from "@/hooks/useClientPagination";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import type { AdminEnquiry, EnquiryReply } from "@/lib/deal-types";
+import { apiFetch } from "@/lib/deal-api";
+import type { AdminEnquiry, AdminEnquiryListCounts, EnquiryReply } from "@/lib/deal-types";
 import { cn, formatCurrency, formatDateTime, formatPropertyType, getFullName } from "@/lib/deal-utils";
+import { PAGE_SIZE_OPTIONS, type PaginationMeta } from "@/lib/pagination";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 
 type EnquiryFilterId = "all" | "unreplied" | "replied" | "failed";
 type AdminEnquiryModalState = { kind: "enquiry" | "replies"; enquiry: AdminEnquiry } | null;
+type EnquiryQueryState = {
+  filter: EnquiryFilterId;
+  search: string;
+};
+type EnquiryRepliesResponse = {
+  replies: EnquiryReply[];
+};
 
 const ENQUIRY_TABLE_DESKTOP_LAYOUT =
   "xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.05fr)_minmax(0,1.05fr)_minmax(0,1.2fr)_minmax(0,0.88fr)_auto] xl:gap-4";
+
+function AdminEnquiriesSkeletonRows({ rows }: { rows: number }) {
+  return (
+    <div className={ADMIN_TABLE_ROW_GROUP_CLASS} aria-hidden="true">
+      {Array.from({ length: rows }).map((_, rowIndex) => (
+        <div key={rowIndex} className={ADMIN_TABLE_ROW_CLASS}>
+          <div className={cn("grid gap-2 sm:gap-3 xl:items-center", ENQUIRY_TABLE_DESKTOP_LAYOUT)}>
+            {Array.from({ length: 6 }).map((__, columnIndex) => (
+              <div key={columnIndex} className={cn("min-w-0", columnIndex > 0 && "hidden xl:block")}>
+                <SkeletonBlock className="h-4 w-3/4 rounded-xl bg-[#e2e8f0]" />
+                <SkeletonBlock className="mt-2 h-3 w-1/2 rounded-xl bg-[#e2e8f0]" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function getBrokerName(enquiry: AdminEnquiry) {
   return enquiry.broker ? getFullName(enquiry.broker.first_name, enquiry.broker.last_name) || enquiry.broker.email : "Broker unavailable";
@@ -210,9 +240,11 @@ function AdminEnquiryDetailModal({
 
 function AdminReplyDetailModal({
   enquiry,
+  isLoading = false,
   onClose,
 }: {
   enquiry: AdminEnquiry;
+  isLoading?: boolean;
   onClose: () => void;
 }) {
   const orderedReplies = [...enquiry.replies].sort((left, right) => getReplyActivityDate(right).localeCompare(getReplyActivityDate(left)));
@@ -241,7 +273,9 @@ function AdminReplyDetailModal({
         </div>
 
         <div className="mt-6 space-y-3">
-          {orderedReplies.length ? (
+          {isLoading ? (
+            <AdminBlankState title="Loading replies" description="Reply history is loading." />
+          ) : orderedReplies.length ? (
             orderedReplies.map((reply) => (
               <div key={reply.id} className="rounded-[12px] border border-[#e5e9f2] bg-[linear-gradient(180deg,#ffffff_0%,#f8faff_100%)] p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -275,21 +309,36 @@ function AdminReplyDetailModal({
 }
 
 export function AdminEnquiriesWorkspace({
+  counts,
   dateFilter,
   enquiries,
   getListingDetailHref,
+  isLoading = false,
+  pagination: serverPagination,
   showBrokerAction = true,
   stateResetKey,
+  onPageChange,
+  onPageSizeChange,
+  onQueryChange,
 }: {
+  counts?: AdminEnquiryListCounts;
   dateFilter: AdminDashboardDateFilterValue;
   enquiries: AdminEnquiry[];
   getListingDetailHref?: (listingId: string) => string;
+  isLoading?: boolean;
+  pagination?: PaginationMeta;
   showBrokerAction?: boolean;
   stateResetKey: string;
+  onPageChange?: (page: number) => void;
+  onPageSizeChange?: (pageSize: number) => void;
+  onQueryChange?: (query: EnquiryQueryState) => void;
 }) {
+  const { enqueueSnackbar } = useSnackbar();
   const [filter, setFilter] = useState<EnquiryFilterId>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [modalState, setModalState] = useState<AdminEnquiryModalState>(null);
+  const [replyDetailsByEnquiryId, setReplyDetailsByEnquiryId] = useState<Record<string, EnquiryReply[]>>({});
+  const [replyLoadingEnquiryId, setReplyLoadingEnquiryId] = useState<string | null>(null);
   const debouncedSearchQuery = useDebouncedValue(searchQuery, 250);
   const normalizedSearchQuery = normalizeSearchQuery(debouncedSearchQuery);
 
@@ -297,7 +346,16 @@ export function AdminEnquiriesWorkspace({
     setFilter("all");
     setSearchQuery("");
     setModalState(null);
+    setReplyDetailsByEnquiryId({});
+    setReplyLoadingEnquiryId(null);
   }, [stateResetKey]);
+
+  useEffect(() => {
+    onQueryChange?.({
+      filter,
+      search: normalizedSearchQuery,
+    });
+  }, [filter, normalizedSearchQuery, onQueryChange]);
 
   const dateScopedEnquiries = useMemo(
     () => enquiries.filter((enquiry) => matchesAdminDashboardDateRange(enquiry.created_at, dateFilter)),
@@ -311,19 +369,27 @@ export function AdminEnquiriesWorkspace({
     return dateScopedEnquiries.filter((enquiry) => getEnquirySearchText(enquiry).includes(normalizedSearchQuery));
   }, [dateScopedEnquiries, normalizedSearchQuery]);
   const filters = useMemo(
-    () => [
-      { id: "all" as const, label: "All Enquiries", count: searchScopedEnquiries.length },
-      { id: "unreplied" as const, label: "Unreplied", count: searchScopedEnquiries.filter((enquiry) => enquiry.reply_count === 0).length },
-      { id: "replied" as const, label: "Replied", count: searchScopedEnquiries.filter(isRepliedEnquiry).length },
-      {
-        id: "failed" as const,
-        label: "Failed",
-        count: searchScopedEnquiries.filter(hasFailedReply).length,
-      },
-    ],
-    [searchScopedEnquiries]
+    () =>
+      counts
+        ? [
+            { id: "all" as const, label: "All Enquiries", count: counts.all },
+            { id: "unreplied" as const, label: "Unreplied", count: counts.unreplied },
+            { id: "replied" as const, label: "Replied", count: counts.replied },
+            { id: "failed" as const, label: "Failed", count: counts.failed },
+          ]
+        : [
+            { id: "all" as const, label: "All Enquiries", count: searchScopedEnquiries.length },
+            { id: "unreplied" as const, label: "Unreplied", count: searchScopedEnquiries.filter((enquiry) => enquiry.reply_count === 0).length },
+            { id: "replied" as const, label: "Replied", count: searchScopedEnquiries.filter(isRepliedEnquiry).length },
+            {
+              id: "failed" as const,
+              label: "Failed",
+              count: searchScopedEnquiries.filter(hasFailedReply).length,
+            },
+          ],
+    [counts, searchScopedEnquiries]
   );
-  const visibleEnquiries = useMemo(
+  const clientVisibleEnquiries = useMemo(
     () => searchScopedEnquiries.filter((enquiry) => matchesEnquiryFilter(enquiry, filter)),
     [filter, searchScopedEnquiries]
   );
@@ -333,9 +399,37 @@ export function AdminEnquiriesWorkspace({
     pageSizeOptions,
     setPage,
     setPageSize,
-  } = useClientPagination(visibleEnquiries, {
-    resetKey: `${stateResetKey}|${filter}|${normalizedSearchQuery}|${dateFilter.id}|${dateFilter.range?.startDate || ""}|${dateFilter.range?.endDate || ""}|${visibleEnquiries.length}`,
+  } = useClientPagination(clientVisibleEnquiries, {
+    resetKey: `${stateResetKey}|${filter}|${normalizedSearchQuery}|${dateFilter.id}|${dateFilter.range?.startDate || ""}|${dateFilter.range?.endDate || ""}|${clientVisibleEnquiries.length}`,
   });
+  const isServerPaginated = !!serverPagination && !!onPageChange && !!onPageSizeChange;
+  const visibleEnquiries = isServerPaginated ? enquiries : clientVisibleEnquiries;
+  const renderedEnquiries = isServerPaginated ? enquiries : paginatedEnquiries;
+  const resolvedPagination = isServerPaginated ? serverPagination : pagination;
+  const resolvedPageSizeOptions = isServerPaginated ? PAGE_SIZE_OPTIONS : pageSizeOptions;
+  const resolvedSetPage = isServerPaginated ? onPageChange : setPage;
+  const resolvedSetPageSize = isServerPaginated ? onPageSizeChange : setPageSize;
+
+  const openReplyModal = async (enquiry: AdminEnquiry) => {
+    setModalState({ kind: "replies", enquiry });
+
+    if (replyDetailsByEnquiryId[enquiry.id] || enquiry.reply_count === 0 || enquiry.replies.length >= enquiry.reply_count) {
+      return;
+    }
+
+    setReplyLoadingEnquiryId(enquiry.id);
+    try {
+      const payload = await apiFetch<EnquiryRepliesResponse>(`/api/admin/enquiries/${enquiry.id}/replies`);
+      setReplyDetailsByEnquiryId((current) => ({
+        ...current,
+        [enquiry.id]: payload.replies || [],
+      }));
+    } catch (error) {
+      enqueueSnackbar(error instanceof Error ? error.message : "Failed to load enquiry replies.", { variant: "error" });
+    } finally {
+      setReplyLoadingEnquiryId(null);
+    }
+  };
 
   return (
     <>
@@ -373,9 +467,11 @@ export function AdminEnquiriesWorkspace({
           ))}
         </div>
 
-        {visibleEnquiries.length ? (
+        {isLoading ? (
+          <AdminEnquiriesSkeletonRows rows={resolvedPagination.pageSize} />
+        ) : visibleEnquiries.length ? (
           <div className={ADMIN_TABLE_ROW_GROUP_CLASS}>
-            {paginatedEnquiries.map((enquiry) => {
+            {renderedEnquiries.map((enquiry) => {
               const listing = getListingSummary(enquiry);
               const listingHref = getAdminListingHref(enquiry, getListingDetailHref);
               const brokerHref = getAdminBrokerHref(enquiry);
@@ -387,7 +483,7 @@ export function AdminEnquiriesWorkspace({
                 },
                 {
                   label: "View Reply",
-                  onClick: () => setModalState({ kind: "replies", enquiry }),
+                  onClick: () => void openReplyModal(enquiry),
                 },
                 {
                   label: "View Listing",
@@ -473,11 +569,11 @@ export function AdminEnquiriesWorkspace({
 
       {visibleEnquiries.length ? (
         <ListPaginationControls
-          pagination={pagination}
-          pageSizeOptions={pageSizeOptions}
+          pagination={resolvedPagination}
+          pageSizeOptions={resolvedPageSizeOptions}
           itemLabel="enquiries"
-          onPageChange={setPage}
-          onPageSizeChange={setPageSize}
+          onPageChange={resolvedSetPage}
+          onPageSizeChange={resolvedSetPageSize}
         />
       ) : null}
 
@@ -491,7 +587,11 @@ export function AdminEnquiriesWorkspace({
 
       {modalState?.kind === "replies" ? (
         <AdminReplyDetailModal
-          enquiry={modalState.enquiry}
+          enquiry={{
+            ...modalState.enquiry,
+            replies: replyDetailsByEnquiryId[modalState.enquiry.id] || modalState.enquiry.replies,
+          }}
+          isLoading={replyLoadingEnquiryId === modalState.enquiry.id}
           onClose={() => setModalState(null)}
         />
       ) : null}

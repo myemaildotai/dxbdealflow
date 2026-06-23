@@ -12,8 +12,8 @@ import { ListingMasonryGallery } from "@/components/ListingMasonryGallery";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { useAuth } from "@/auth/useAuth";
 import { getSafeAdminReturnHref } from "@/lib/admin-navigation";
-import { apiFetch } from "@/lib/deal-api";
-import { invalidateAdminOverviewCaches, invalidateListingCaches } from "@/lib/client-cache";
+import { apiFetch, apiFetchCached } from "@/lib/deal-api";
+import { invalidateAdminBrokerActivityCaches, invalidateAdminOverviewCaches, invalidateListingCaches } from "@/lib/client-cache";
 import { NEW_DEAL_ALERT_COOLDOWN_DAYS, getNewDealAlertCooldownState } from "@/lib/email-alert-config";
 import type { AdminListingDetail } from "@/lib/deal-types";
 import {
@@ -30,8 +30,10 @@ import {
   statusClasses,
 } from "@/lib/deal-utils";
 import { getDefaultRouteForUser, isAdmin } from "@/lib/route-access";
+import { getSessionResourceGeneration } from "@/lib/session-resource";
 
 const APPROVAL_SUCCESS_BAR_DURATION_MS = 10_000;
+const LISTING_DETAIL_CACHE_TTL_MS = 5_000;
 const RESPONSIVE_SUBTLE_COMPACT_CLASS =
   "min-w-0 max-w-full border-t border-brand-line/80 bg-transparent px-0 py-4 text-brand-ink shadow-none md:rounded-[8px] md:border md:border-brand-line/80 md:bg-brand-panel-soft md:p-4 md:shadow-[0_8px_24px_rgba(15,42,95,0.05)]";
 const RESPONSIVE_SUBTLE_ROOMY_CLASS =
@@ -567,11 +569,18 @@ export default function AdminListingDetailPage() {
     </BackButton>
   );
 
-  const loadDetail = useCallback(async () => {
+  const loadDetail = useCallback(async (force = false) => {
     if (!listingId) return null;
     const requestId = detailRequestIdRef.current + 1;
     detailRequestIdRef.current = requestId;
-    const payload = await apiFetch<AdminListingDetail>(`/api/admin/listings/${listingId}`);
+    const payload = await apiFetchCached<AdminListingDetail>(
+      `/api/admin/listings/${listingId}`,
+      {},
+      {
+        force,
+        ttlMs: LISTING_DETAIL_CACHE_TTL_MS,
+      }
+    );
     if (detailRequestIdRef.current === requestId) {
       detailRef.current = payload;
       setDetail(payload);
@@ -597,6 +606,8 @@ export default function AdminListingDetailPage() {
     }
 
     if (!loading && user && listingId) {
+      const requestGeneration = getSessionResourceGeneration();
+      const isCurrentRequest = () => isActive && requestGeneration === getSessionResourceGeneration();
       const hasCurrentDetail = detailRef.current?.listing.id === listingId;
 
       if (!hasCurrentDetail) {
@@ -606,9 +617,15 @@ export default function AdminListingDetailPage() {
       }
 
       loadDetail()
-        .catch((error) => enqueueSnackbar(error instanceof Error ? error.message : "Failed to load listing detail.", { variant: "error" }))
+        .catch((error) => {
+          if (!isCurrentRequest()) {
+            return;
+          }
+
+          enqueueSnackbar(error instanceof Error ? error.message : "Failed to load listing detail.", { variant: "error" });
+        })
         .finally(() => {
-          if (isActive) {
+          if (isCurrentRequest()) {
             setPageLoading(false);
           }
         });
@@ -638,9 +655,10 @@ export default function AdminListingDetailPage() {
       });
       invalidateListingCaches(detail.listing.id);
       invalidateAdminOverviewCaches();
+      if (detail.listing.created_by) invalidateAdminBrokerActivityCaches(detail.listing.created_by);
       enqueueSnackbar("Moderation action completed.", { variant: "success" });
       setPendingAction(null);
-      await loadDetail();
+      await loadDetail(true);
     } catch (error) {
       enqueueSnackbar(error instanceof Error ? error.message : "Moderation action failed.", { variant: "error" });
     } finally {
@@ -686,7 +704,7 @@ export default function AdminListingDetailPage() {
       );
 
       try {
-        await loadDetail();
+        await loadDetail(true);
       } catch (refreshError) {
         enqueueSnackbar(
           refreshError instanceof Error ? refreshError.message : "New Deal Alert sent, but listing state could not be refreshed.",

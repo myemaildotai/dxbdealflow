@@ -2,6 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { prefetchApi } from "@/lib/deal-api";
+import { createListingDetailHref } from "@/lib/listing-navigation";
 import {
   formatCurrency,
   formatNumber,
@@ -176,11 +178,18 @@ function getListingPrice(value: number | null | undefined) {
 export function ListingCard({
   item,
   isBestDeal,
+  listingReturnHref,
 }: {
   item: ListingIntel;
   isBestDeal: boolean;
+  listingReturnHref?: string;
 }) {
   const listing = item.listing;
+  const detailHref = createListingDetailHref(listing.id, listingReturnHref);
+  const detailApiPath = `/api/listings/${listing.id}`;
+  const prefetchDetail = () => {
+    prefetchApi(detailApiPath, {}, { ttlMs: 60_000 });
+  };
   const coverImage = getCoverImage(listing);
   const primaryBadge = getPrimaryBadgeLabel(item, isBestDeal);
   const inlineBadge = getInlineBadge(item);
@@ -350,7 +359,10 @@ export function ListingCard({
           </div>
 
           <Link
-            href={`/listings/${listing.id}`}
+            href={detailHref}
+            onFocus={prefetchDetail}
+            onMouseEnter={prefetchDetail}
+            onPointerDown={prefetchDetail}
             className="inline-flex min-h-[40px] w-full shrink-0 items-center justify-center gap-1.5 rounded-[10px] bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(15,42,95,0.18)] transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_14px_28px_rgba(15,42,95,0.24)] md:w-auto"
           >
             View Deal

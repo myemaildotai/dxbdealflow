@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BROKER_BIO_MAX_LENGTH } from "@/lib/broker-application";
+import { fetchBrokerDashboardProfile } from "@/lib/broker-dashboard-server";
 import { normalizeInstagramProfile, normalizeLinkedInProfile } from "@/lib/broker-social";
 import { getServiceSupabase, jsonError, requireApprovedBroker, withNoStore } from "@/lib/deal-server";
 import { fetchUserBundle } from "@/lib/platform-server-data";
@@ -34,6 +35,14 @@ type UpdateBrokerProfileBody = {
   shareLatestDeals?: unknown;
   profilePhoto?: File | null;
 };
+
+export async function GET(request: NextRequest) {
+  const auth = await requireApprovedBroker(request);
+  if ("error" in auth) return auth.error;
+
+  const dashboard = await fetchBrokerDashboardProfile(getServiceSupabase(), auth.user.id, auth.user);
+  return NextResponse.json(dashboard, withNoStore());
+}
 
 function readStringValue(value: FormDataEntryValue | unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -272,6 +281,10 @@ export async function PUT(request: NextRequest) {
       instagramProfile = normalizeInstagramProfile(body.instagramProfile);
     } catch (error) {
       return jsonError(error instanceof Error ? error.message : "Enter a valid Instagram profile URL or handle.", 400);
+    }
+
+    if (!instagramProfile) {
+      return jsonError("Instagram is required.", 400);
     }
 
     try {

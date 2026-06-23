@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   getRequestUser,
+  getRequestAccessToken,
+  getRequestRefreshToken,
   getServiceSupabase,
   jsonError,
   LISTING_SELECT,
@@ -13,9 +15,17 @@ import {
   parseNumber,
 } from "@/lib/deal-utils";
 import type { Listing, ListingDocument, PlatformUser } from "@/lib/deal-types";
-import { getListingDocumentValidationError } from "@/lib/document-upload";
+import {
+  LISTING_DOCUMENT_DUPLICATE_FILENAME_MESSAGE,
+  getListingDocumentMetadataValidationError,
+  normalizeListingDocumentFileName,
+  parseListingDocumentMetadata,
+  parseListingDocumentMetadataPayload,
+  type UploadedListingDocumentMetadata,
+} from "@/lib/document-upload";
 import { getHandoverDateValidationMessage } from "@/lib/handover-date";
 import { getImageUploadValidationError } from "@/lib/image-upload";
+import { saveUploadedListingDocuments } from "@/lib/listing-documents-server";
 import { normalizeListingMediaUrl } from "@/lib/listing-media";
 
 const MIN_LISTING_IMAGES = 1;
@@ -48,6 +58,82 @@ type ListingConversationRow = {
 type LegacyChatMessageRow = {
   sender_id: string;
 };
+
+type ListingDetailBundle = {
+  agency: Listing["agency"];
+  area: Listing["area"];
+  brokers_engaged_count: number | string | null;
+  commission_terms: Listing["commission_terms"];
+  enquiry_count: number | string | null;
+  listing: Listing;
+  listing_documents: ListingDocument[];
+  listing_images: Listing["listing_images"];
+  owner: Listing["owner"];
+  owner_active_listings_count: number | string | null;
+  public_broker: Listing["public_broker"];
+};
+
+type RequestTimings = Map<string, number>;
+let listingDetailBundleRpcAvailable: boolean | null = null;
+
+async function measure<T>(
+  timings: RequestTimings,
+  name: string,
+  operation: () => PromiseLike<T>,
+) {
+  const startedAt = performance.now();
+
+  try {
+    return await operation();
+  } finally {
+    timings.set(name, performance.now() - startedAt);
+  }
+}
+
+function recordTiming(
+  timings: RequestTimings,
+  name: string,
+  startedAt: number,
+) {
+  timings.set(name, performance.now() - startedAt);
+}
+
+function buildServerTimingHeader(timings: RequestTimings) {
+  return Array.from(timings.entries())
+    .map(([name, duration]) => `${name};dur=${duration.toFixed(1)}`)
+    .join(", ");
+}
+
+function normalizeCount(value: number | string | null | undefined) {
+  const count = Number(value || 0);
+  return Number.isFinite(count) ? count : 0;
+}
+
+async function fetchListingDetailBundle(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  listingId: string,
+  includeInternal: boolean,
+) {
+  if (listingDetailBundleRpcAvailable === false) {
+    return { available: false, bundle: null as ListingDetailBundle | null };
+  }
+
+  const { data, error } = await supabase.rpc("get_listing_detail_bundle", {
+    p_include_internal: includeInternal,
+    p_listing_id: listingId,
+  });
+
+  if (error) {
+    listingDetailBundleRpcAvailable = false;
+    return { available: false, bundle: null as ListingDetailBundle | null };
+  }
+
+  listingDetailBundleRpcAvailable = true;
+  return {
+    available: true,
+    bundle: (data as ListingDetailBundle | null) || null,
+  };
+}
 
 async function fetchListingEngagementMetrics(
   supabase: ReturnType<typeof getServiceSupabase>,
@@ -201,41 +287,6 @@ async function uploadListingImages(
   }
 
   return uploadedImageIds;
-}
-
-async function uploadListingDocuments(
-  supabase: ReturnType<typeof getServiceSupabase>,
-  listingId: string,
-  userId: string,
-  files: File[]
-) {
-  for (const file of files) {
-    const validationError = getListingDocumentValidationError(file);
-    if (validationError) {
-      throw new Error(validationError);
-    }
-
-    const path = `${userId}/${listingId}/${Date.now()}-${file.name}`;
-    const { error: uploadError } = await supabase.storage.from("listing-documents").upload(path, file, {
-      upsert: false,
-    });
-
-    if (uploadError) {
-      throw new Error(uploadError.message || "Failed to upload document.");
-    }
-
-    const { data: publicUrl } = supabase.storage.from("listing-documents").getPublicUrl(path);
-    const { error: documentError } = await supabase.from("listing_documents").insert({
-      listing_id: listingId,
-      file_name: file.name,
-      storage_path: path,
-      public_url: publicUrl.publicUrl,
-    });
-
-    if (documentError) {
-      throw new Error(documentError.message || "Failed to save document.");
-    }
-  }
 }
 
 async function removeListingImage(
@@ -444,13 +495,13 @@ function buildListingActivityChangedFields(
 }
 
 function buildListingAssetActivityChangedFields({
-  documentFiles,
+  documentCount,
   existingImageIds,
   imageFiles,
   imageOrder,
   normalizedRemoveImageIds,
 }: {
-  documentFiles: File[];
+  documentCount: number;
   existingImageIds: string[];
   imageFiles: File[];
   imageOrder: string[];
@@ -487,11 +538,11 @@ function buildListingAssetActivityChangedFields({
     });
   }
 
-  if (documentFiles.length) {
+  if (documentCount) {
     changedFields.push({
       field: "listing_documents",
       previousValue: null,
-      nextValue: `${documentFiles.length} document${documentFiles.length === 1 ? "" : "s"} added`,
+      nextValue: `${documentCount} document${documentCount === 1 ? "" : "s"} added`,
     });
   }
 
@@ -562,10 +613,37 @@ async function reorderListingImages(
 }
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+  const requestStartedAt = performance.now();
+  const timings: RequestTimings = new Map();
   const supabase = getServiceSupabase();
-  const viewer = await getRequestUser(request);
+  const hasAuthCredentials = Boolean(
+    getRequestAccessToken(request) || getRequestRefreshToken(request),
+  );
+  const shouldLoadFallbackListing = listingDetailBundleRpcAvailable !== true;
+  const fallbackListingPromise =
+    !shouldLoadFallbackListing
+      ? Promise.resolve({ data: null as Listing | null })
+      : measure(timings, "listing", () =>
+          supabase.from("listings").select(LISTING_SELECT).eq("id", params.id).maybeSingle(),
+        );
+  const [viewer, detailBundleResult, fallbackListingResult] = await Promise.all([
+    measure(timings, "auth", () => getRequestUser(request)),
+    measure(timings, "detail_bundle", () =>
+      fetchListingDetailBundle(supabase, params.id, hasAuthCredentials),
+    ),
+    fallbackListingPromise,
+  ]);
+  let listingRow =
+    detailBundleResult.bundle?.listing ||
+    (fallbackListingResult.data as Listing | null) ||
+    null;
 
-  const { data: listingRow } = await supabase.from("listings").select(LISTING_SELECT).eq("id", params.id).maybeSingle();
+  if (!detailBundleResult.available && !listingRow && !shouldLoadFallbackListing) {
+    const fallbackResult = await measure(timings, "listing_fallback", () =>
+      supabase.from("listings").select(LISTING_SELECT).eq("id", params.id).maybeSingle(),
+    );
+    listingRow = (fallbackResult.data as Listing | null) || null;
+  }
 
   if (!listingRow || listingRow.deleted_at) {
     return jsonError("Listing not found.", 404);
@@ -581,51 +659,108 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 
   const canViewDocuments = !!viewer && (isOwner || isAdmin);
-  let listing: Listing;
-  let documentsResult: { data: ListingDocument[] | null; error: { message?: string } | null };
-  let engagementMetrics: Awaited<ReturnType<typeof fetchListingEngagementMetrics>>;
+  let listing: Listing = listingRow;
+  let documents: ListingDocument[] = [];
+  let engagementMetrics = {
+    enquiryCount: 0,
+    brokersEngagedCount: 0,
+  };
   let publicBroker: Listing["public_broker"] = null;
 
-  try {
-    const [hydratedListings, loadedDocumentsResult, loadedEngagementMetrics, brokerSummaries] = await Promise.all([
-      hydrateListings(supabase, [listingRow as Listing], {
-        includeAgencies: canSeeInternal,
-        includeCommissionTerms: canSeeInternal,
-        includeOwnerActiveCount: canSeeInternal,
-        includeOwners: canSeeInternal,
-      }),
-      canViewDocuments
-        ? supabase
+  if (detailBundleResult.available && detailBundleResult.bundle) {
+    const bundle = detailBundleResult.bundle;
+    listing = {
+      ...listingRow,
+      area: bundle.area || null,
+      owner: bundle.owner || null,
+      agency: bundle.agency || null,
+      commission_terms: bundle.commission_terms || null,
+      listing_images: bundle.listing_images || [],
+      owner_active_listings_count: normalizeCount(bundle.owner_active_listings_count),
+    };
+    engagementMetrics = {
+      enquiryCount: normalizeCount(bundle.enquiry_count),
+      brokersEngagedCount: normalizeCount(bundle.brokers_engaged_count),
+    };
+    publicBroker = bundle.public_broker || null;
+
+    if (canViewDocuments) {
+      const documentsResult = await measure(timings, "documents", () =>
+        supabase
+          .from("listing_documents")
+          .select("id, listing_id, file_name, storage_path, public_url")
+          .eq("listing_id", params.id),
+      );
+
+      if (documentsResult.error) {
+        return jsonError(documentsResult.error.message || "Failed to load listing documents.", 500);
+      }
+
+      documents = (documentsResult.data as ListingDocument[] | null) || [];
+    }
+  } else {
+    try {
+      const [hydratedListings, loadedDocumentsResult, loadedEngagementMetrics, brokerSummaries] = await Promise.all([
+        measure(timings, "hydration", () =>
+          hydrateListings(supabase, [listingRow as Listing], {
+            includeAgencies: canSeeInternal,
+            includeCommissionTerms: canSeeInternal,
+            includeOwnerActiveCount: canSeeInternal,
+            includeOwners: canSeeInternal,
+          }),
+        ),
+        measure(timings, "documents", async () => {
+          if (!canViewDocuments) {
+            return { data: [] as ListingDocument[] | null, error: null };
+          }
+
+          const result = await supabase
             .from("listing_documents")
             .select("id, listing_id, file_name, storage_path, public_url")
-            .eq("listing_id", params.id)
-        : Promise.resolve({ data: [] as ListingDocument[] | null, error: null }),
-      fetchListingEngagementMetrics(supabase, params.id, listingRow.created_by),
-      fetchChatUserSummaries(supabase, [listingRow.created_by]),
-    ]);
+            .eq("listing_id", params.id);
 
-    listing = hydratedListings[0];
-    documentsResult = loadedDocumentsResult as { data: ListingDocument[] | null; error: { message?: string } | null };
-    engagementMetrics = loadedEngagementMetrics;
-    const brokerSummary = brokerSummaries[0];
-    publicBroker =
-      brokerSummary || listing.owner
-        ? {
-            first_name: brokerSummary?.first_name ?? listing.owner?.first_name ?? null,
-            last_name: brokerSummary?.last_name ?? listing.owner?.last_name ?? null,
-            profile_photo: brokerSummary?.profile_photo ?? null,
-          }
-        : null;
-  } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Failed to load listing detail.", 500);
+          return {
+            data: (result.data as ListingDocument[] | null) || [],
+            error: result.error,
+          };
+        }),
+        measure(timings, "engagement", () =>
+          fetchListingEngagementMetrics(supabase, params.id, listingRow.created_by),
+        ),
+        measure(timings, "public_broker", () =>
+          fetchChatUserSummaries(supabase, [listingRow.created_by]),
+        ),
+      ]);
+
+      listing = hydratedListings[0];
+      const documentsResult = loadedDocumentsResult as {
+        data: ListingDocument[] | null;
+        error: { message?: string } | null;
+      };
+
+      if (documentsResult.error) {
+        return jsonError(documentsResult.error.message || "Failed to load listing documents.", 500);
+      }
+
+      documents = documentsResult.data || [];
+      engagementMetrics = loadedEngagementMetrics;
+      const brokerSummary = brokerSummaries[0];
+      publicBroker =
+        brokerSummary || listing.owner
+          ? {
+              first_name: brokerSummary?.first_name ?? listing.owner?.first_name ?? null,
+              last_name: brokerSummary?.last_name ?? listing.owner?.last_name ?? null,
+              profile_photo: brokerSummary?.profile_photo ?? null,
+            }
+          : null;
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : "Failed to load listing detail.", 500);
+    }
   }
   const viewerCanChat = !!viewer && viewer.role === "broker" && isActiveBrokerStatus(viewer.status) && viewer.id !== listing.created_by;
 
-  if (documentsResult.error) {
-    return jsonError(documentsResult.error.message || "Failed to load listing documents.", 500);
-  }
-
-  return NextResponse.json({
+  const responseBuildStartedAt = performance.now();
+  const response = NextResponse.json({
     listing: {
       ...listing,
       can_edit: isOwner,
@@ -633,13 +768,17 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       enquiry_count: engagementMetrics.enquiryCount,
       brokers_engaged_count: engagementMetrics.brokersEngagedCount,
       commission_terms: canSeeInternal ? listing.commission_terms : null,
-      listing_documents: (documentsResult.data as ListingDocument[] | null) || [],
+      listing_documents: canViewDocuments ? documents : [],
       public_broker: publicBroker,
       owner: canSeeInternal ? listing.owner : null,
       agency: canSeeInternal ? listing.agency : null,
       owner_active_listings_count: canSeeInternal ? listing.owner_active_listings_count : null,
     },
   });
+  recordTiming(timings, "response_build", responseBuildStartedAt);
+  recordTiming(timings, "total", requestStartedAt);
+  response.headers.set("Server-Timing", buildServerTimingHeader(timings));
+  return response;
 }
 
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
@@ -744,7 +883,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   const contentType = request.headers.get("content-type") || "";
   let payload: ReturnType<typeof buildListingPayload>;
   let imageFiles: File[] = [];
-  let documentFiles: File[] = [];
+  let documents: UploadedListingDocumentMetadata[] = [];
   let imageOrder: string[] = [];
   let removeImageIds: string[] = [];
   let commissionTerms: { coBrokePercent?: string; paymentTerms?: string; notes?: string } | null = null;
@@ -770,9 +909,11 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     imageFiles = formData
       .getAll("images")
       .filter((entry): entry is File => entry instanceof File && entry.size > 0);
-    documentFiles = formData
-      .getAll("documents")
-      .filter((entry): entry is File => entry instanceof File && entry.size > 0);
+    try {
+      documents = parseListingDocumentMetadata(formData);
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : "Document metadata is invalid.", 400);
+    }
     imageOrder = parseImageOrder(formData.get("imageOrder"));
     removeImageIds = parseStringArray(formData.get("removeImageIds"));
     commissionTerms = {
@@ -783,6 +924,11 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   } else {
     const body = await request.json();
     payload = buildListingPayload(body);
+    try {
+      documents = parseListingDocumentMetadataPayload(body.documents ?? body.documentMetadata);
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : "Document metadata is invalid.", 400);
+    }
     imageOrder = parseImageOrder(body.imageOrder);
     removeImageIds = parseStringArray(body.removeImageIds);
     commissionTerms = body.commissionTerms || null;
@@ -812,7 +958,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   const listingChangedFields = [
     ...buildListingActivityChangedFields(existing as ListingActivitySource, payload),
     ...buildListingAssetActivityChangedFields({
-      documentFiles,
+      documentCount: documents.length,
       existingImageIds,
       imageFiles,
       imageOrder,
@@ -839,10 +985,37 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     return jsonError(imageValidationError, 400);
   }
 
-  for (const document of documentFiles) {
-    const documentValidationError = getListingDocumentValidationError(document);
+  for (const document of documents) {
+    const documentValidationError = getListingDocumentMetadataValidationError(document, auth.user.id);
+
     if (documentValidationError) {
       return jsonError(documentValidationError, 400);
+    }
+  }
+
+  if (documents.length) {
+    const existingDocumentsResult = await supabase
+      .from("listing_documents")
+      .select("file_name")
+      .eq("listing_id", params.id);
+
+    if (existingDocumentsResult.error) {
+      return jsonError(existingDocumentsResult.error.message || "Failed to validate listing documents.", 500);
+    }
+
+    const knownFileNames = new Set(
+      (existingDocumentsResult.data || []).map((document) =>
+        normalizeListingDocumentFileName(document.file_name)
+      )
+    );
+
+    for (const document of documents) {
+      const normalizedFileName = normalizeListingDocumentFileName(document.file_name);
+      if (knownFileNames.has(normalizedFileName)) {
+        return jsonError(LISTING_DOCUMENT_DUPLICATE_FILENAME_MESSAGE, 409);
+      }
+
+      knownFileNames.add(normalizedFileName);
     }
   }
 
@@ -873,9 +1046,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
       uploadedImageIds = await uploadListingImages(supabase, params.id, auth.user.id, imageFiles);
     }
 
-    if (documentFiles.length) {
-      await uploadListingDocuments(supabase, params.id, auth.user.id, documentFiles);
-    }
+    await saveUploadedListingDocuments(supabase, params.id, documents);
 
     if (normalizedRemoveImageIds.length) {
       await removeListingImages(supabase, params.id, normalizedRemoveImageIds);
