@@ -11,6 +11,7 @@ const ALLOWED_API_PATHS_DURING_MAINTENANCE = new Set([
   "/api/auth/session",
   PASSWORD_RESET_API_PATH,
   "/api/early-access-leads",
+  "/api/maintenance/notify",
   "/api/public/admin-login-check",
   "/api/public/maintenance-mode",
   "/api/public/site-modes",
@@ -192,13 +193,19 @@ async function loadSiteModeState(request: NextRequest): Promise<SiteModeState> {
     maintenanceEnabled: false,
     comingSoonEnabled: false,
   };
-  const siteModeUrl = request.nextUrl.clone();
-  siteModeUrl.pathname = "/api/public/site-modes";
-  siteModeUrl.search = "";
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = resolveSupabaseSettingsKey();
+
+  if (!supabaseUrl || !supabaseKey) {
+    return fallback;
+  }
 
   try {
-    const response = await fetch(siteModeUrl, {
+    const url = `${supabaseUrl}/rest/v1/settings?key=in.(maintenance_mode,coming_soon_mode)&select=key,value`;
+    const response = await fetch(url, {
       headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
         Accept: "application/json",
       },
       cache: "no-store",
@@ -208,14 +215,29 @@ async function loadSiteModeState(request: NextRequest): Promise<SiteModeState> {
       return fallback;
     }
 
-    const payload = (await response.json().catch(() => null)) as {
-      maintenance?: { enabled?: boolean };
-      comingSoon?: { enabled?: boolean };
-    } | null;
+    const payload = (await response.json().catch(() => null)) as Array<{
+      key: string;
+      value: { enabled?: boolean } | null;
+    }> | null;
+
+    if (!payload || !Array.isArray(payload)) {
+      return fallback;
+    }
+
+    let maintenanceEnabled = false;
+    let comingSoonEnabled = false;
+
+    for (const item of payload) {
+      if (item.key === "maintenance_mode") {
+        maintenanceEnabled = !!item.value?.enabled;
+      } else if (item.key === "coming_soon_mode") {
+        comingSoonEnabled = !!item.value?.enabled;
+      }
+    }
 
     return {
-      maintenanceEnabled: !!payload?.maintenance?.enabled,
-      comingSoonEnabled: !!payload?.comingSoon?.enabled,
+      maintenanceEnabled,
+      comingSoonEnabled,
     };
   } catch {
     return fallback;
@@ -284,7 +306,79 @@ function redirectToHome(request: NextRequest) {
   return redirectToPath(request, "/");
 }
 
+async function verifyJWTLocal(accessToken: string): Promise<string | null> {
+  const secret = process.env.SUPABASE_JWT_SECRET;
+  if (!secret) {
+    return null;
+  }
+
+  try {
+    const parts = accessToken.split(".");
+    if (parts.length !== 3) {
+      return null;
+    }
+
+    const [headerB64, payloadB64, signatureB64] = parts;
+
+    const base64ToUint8Array = (str: string) => {
+      let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+      while (base64.length % 4) {
+        base64 += "=";
+      }
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    };
+
+    const signatureBytes = base64ToUint8Array(signatureB64);
+    const encoder = new TextEncoder();
+    const secretBytes = encoder.encode(secret);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      secretBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+
+    const dataToVerify = encoder.encode(`${headerB64}.${payloadB64}`);
+    const isValid = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      signatureBytes,
+      dataToVerify
+    );
+
+    if (!isValid) {
+      return null;
+    }
+
+    let base64 = payloadB64.replace(/-/g, "+").replace(/_/g, "/");
+    while (base64.length % 4) {
+      base64 += "=";
+    }
+    const payloadJSON = JSON.parse(atob(base64)) as { exp?: number; sub?: string; id?: string };
+
+    const exp = payloadJSON.exp;
+    if (typeof exp === "number" && Date.now() >= exp * 1000) {
+      return null;
+    }
+
+    return payloadJSON.sub || payloadJSON.id || null;
+  } catch {
+    return null;
+  }
+}
+
 async function getVerifiedUserId(accessToken: string) {
+  const localUserId = await verifyJWTLocal(accessToken);
+  if (localUserId) {
+    return localUserId;
+  }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = resolveSupabaseSettingsKey();
 

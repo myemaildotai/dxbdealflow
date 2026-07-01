@@ -110,11 +110,12 @@ export async function POST(request: NextRequest) {
         });
         await logActivity(auth.user.id, "broker_application_approved", "users", targetId, { notes: notes || null });
         if (brokerUser) {
-          await triggerBrokerVerificationSuccessEmail({
+          const successEmailWorkflow = triggerBrokerVerificationSuccessEmail({
             userId: brokerUser.id,
             brokerName: getFullName(brokerUser.first_name, brokerUser.last_name),
             email: brokerUser.email,
           });
+          runEmailWorkflowInBackground(successEmailWorkflow, "admin-approve-broker-verification-success-email");
         }
         break;
       }
@@ -187,9 +188,7 @@ export async function POST(request: NextRequest) {
           }),
           triggerRequirementMatchFoundForListing({ listingId: targetId }),
         ]);
-        if (!runEmailWorkflowInBackground(approvalEmailWorkflow, "admin-approve-listing")) {
-          await approvalEmailWorkflow;
-        }
+        runEmailWorkflowInBackground(approvalEmailWorkflow, "admin-approve-listing");
         break;
       }
       case "reject_listing": {

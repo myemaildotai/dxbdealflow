@@ -1470,6 +1470,34 @@ export function welcomeEarlyInterestTemplate(params: { overviewUrl?: string | nu
   };
 }
 
+export function maintenanceAvailabilityTemplate(params: { name: string; platformUrl: string }) {
+  const subject = "DXB Deal Flow is available now";
+  const title = "DXB Deal Flow Is Available Now";
+  const subtitle = `Hi ${params.name}, DXB Deal Flow is back online. You can return to the platform now.`;
+  const bodyHtml = renderInfoCard({
+    title: "Maintenance complete",
+    text: "Thanks for your patience while we worked on DXB Deal Flow. The platform is available again.",
+  });
+
+  return {
+    subject,
+    text: textTemplate(title, [
+      subtitle,
+      "Maintenance complete.",
+      "DXB Deal Flow is available again.",
+      `Open DXB Deal Flow: ${params.platformUrl}`,
+    ]),
+    html: renderLayout({
+      title,
+      subtitle,
+      iconLabel: "LIVE",
+      bodyHtml,
+      primaryCta: { label: "Open DXB Deal Flow", href: params.platformUrl },
+      preheader: "DXB Deal Flow is back online.",
+    }),
+  };
+}
+
 export function brokerVerificationSuccessTemplate(params: { brokerName: string; profileUrl: string }) {
   const subject = "Your DXB Deal Flow account has been approved";
   const title = "Your Account Has Been Approved!";

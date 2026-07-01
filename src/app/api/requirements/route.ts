@@ -14,6 +14,11 @@ import { runEmailWorkflowInBackground } from "@/lib/email-service";
 import { triggerRequirementMatchFoundForRequirement } from "@/lib/email-notifications";
 import { buildPaginationMeta, DEFAULT_PAGE_SIZE, normalizePageNumber, normalizePageSize } from "@/lib/pagination";
 import {
+  getRequirementBudgetDigitLimitError,
+  hasNumericInput,
+  parseOptionalNumericInput,
+} from "@/lib/numeric-field-validation";
+import {
   enrichRequirementsWithSubmissionMeta,
   fetchBrokerProfileByUserId,
   fetchRequirementFilterAreas,
@@ -390,8 +395,10 @@ export async function POST(request: NextRequest) {
   const dealType = String(body.dealType || "secondary").trim();
   const rawBedrooms = String(body.bedrooms || "").trim();
   const bedrooms = parseRequirementBedroomOption(rawBedrooms) || rawBedrooms || null;
-  const budgetMin = body.budgetMin ? Number(body.budgetMin) : null;
-  const budgetMax = body.budgetMax ? Number(body.budgetMax) : null;
+  const budgetMinInput = body.budgetMin ?? body.budget_min ?? null;
+  const budgetMaxInput = body.budgetMax ?? body.budget_max ?? null;
+  const budgetMin = parseOptionalNumericInput(budgetMinInput);
+  const budgetMax = parseOptionalNumericInput(budgetMaxInput);
   const area = String(body.area || "").trim();
   const urgency = String(body.urgency || "medium").trim();
   const timeline = String(body.timeline || "").trim() || null;
@@ -400,12 +407,30 @@ export async function POST(request: NextRequest) {
     return jsonError("Area is required.", 400);
   }
 
-  if (budgetMin !== null && !Number.isFinite(budgetMin)) {
+  if (hasNumericInput(budgetMinInput) && budgetMin === null) {
     return jsonError("Minimum budget must be numeric.", 400);
   }
 
-  if (budgetMax !== null && !Number.isFinite(budgetMax)) {
+  if (hasNumericInput(budgetMaxInput) && budgetMax === null) {
     return jsonError("Maximum budget must be numeric.", 400);
+  }
+
+  if (budgetMin !== null && budgetMin < 0) {
+    return jsonError("Minimum budget must be zero or higher.", 400);
+  }
+
+  if (budgetMax !== null && budgetMax < 0) {
+    return jsonError("Maximum budget must be zero or higher.", 400);
+  }
+
+  const budgetMinDigitError = getRequirementBudgetDigitLimitError(budgetMinInput, "Minimum Budget cannot exceed 9 digits.");
+  if (budgetMinDigitError) {
+    return jsonError(budgetMinDigitError, 400);
+  }
+
+  const budgetMaxDigitError = getRequirementBudgetDigitLimitError(budgetMaxInput, "Maximum Budget cannot exceed 9 digits.");
+  if (budgetMaxDigitError) {
+    return jsonError(budgetMaxDigitError, 400);
   }
 
   if (budgetMin !== null && budgetMax !== null && budgetMin > budgetMax) {

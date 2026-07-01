@@ -1,8 +1,26 @@
 import { revalidateTag } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceSupabase, jsonError, requireAdmin, withNoStore } from "@/lib/deal-server";
+import { sendMaintenanceAvailabilityNotifications } from "@/lib/email-notifications";
+import { runEmailWorkflowInBackground } from "@/lib/email-service";
 import { getMaintenanceModeState, setMaintenanceModeState } from "@/lib/maintenance-mode";
 import { clearSiteModeStateCache, SITE_MODE_STATE_CACHE_TAG } from "@/lib/site-mode-state";
+
+async function triggerMaintenanceAvailabilityNotifications() {
+  const workflow = sendMaintenanceAvailabilityNotifications()
+    .then((result) => {
+      console.info("[maintenance-mode] Availability notification workflow completed.", result);
+    })
+    .catch((error) => {
+      console.error("[maintenance-mode] Availability notification workflow failed.", {
+        error: error instanceof Error ? error.message : "Unknown maintenance notification error.",
+      });
+    });
+
+  if (!runEmailWorkflowInBackground(workflow, "maintenance-mode-disabled-availability-notifications")) {
+    await workflow;
+  }
+}
 
 export async function GET(request: NextRequest) {
   const auth = await requireAdmin(request);
@@ -29,6 +47,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const supabase = getServiceSupabase();
+    const previousState = await getMaintenanceModeState(supabase);
     const state = await setMaintenanceModeState(supabase, body.enabled, auth.user.id);
     clearSiteModeStateCache();
     revalidateTag(SITE_MODE_STATE_CACHE_TAG);
@@ -43,6 +62,10 @@ export async function PUT(request: NextRequest) {
         enabled: body.enabled,
       },
     });
+
+    if (previousState.enabled && !state.enabled) {
+      await triggerMaintenanceAvailabilityNotifications();
+    }
 
     return NextResponse.json(state, withNoStore());
   } catch (error) {

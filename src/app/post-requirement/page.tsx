@@ -11,6 +11,10 @@ import { useAuth } from "@/auth/useAuth";
 import { apiFetch } from "@/lib/deal-api";
 import { invalidateRequirementCaches } from "@/lib/client-cache";
 import { cn, formatDealType, formatPropertyType, formatRequirementUrgency } from "@/lib/deal-utils";
+import {
+  getRequirementBudgetDigitLimitError,
+  isNonNegativeNumericInput,
+} from "@/lib/numeric-field-validation";
 import type { RequirementListingMatchSummary } from "@/lib/requirement-matching";
 import { canAccessBrokerWorkspace, getDefaultRouteForUser } from "@/lib/route-access";
 import {
@@ -314,8 +318,19 @@ function validateForm(values: RequirementFormValues): RequirementErrors {
   if (!values.propertyType) nextErrors.propertyType = "Select a property type.";
   if (!values.bedrooms) nextErrors.bedrooms = "Select the bedroom count.";
   if (!values.area.trim()) nextErrors.area = "Select an area.";
-  if (!isPositiveNumber(values.budgetMin)) nextErrors.budgetMin = "Enter a valid minimum budget.";
-  if (!isPositiveNumber(values.budgetMax)) nextErrors.budgetMax = "Enter a valid maximum budget.";
+  if (!isNonNegativeNumericInput(values.budgetMin)) {
+    nextErrors.budgetMin = "Enter a valid minimum budget.";
+  } else {
+    const budgetMinDigitError = getRequirementBudgetDigitLimitError(values.budgetMin, "Minimum Budget cannot exceed 9 digits.");
+    if (budgetMinDigitError) nextErrors.budgetMin = budgetMinDigitError;
+  }
+
+  if (!isNonNegativeNumericInput(values.budgetMax)) {
+    nextErrors.budgetMax = "Enter a valid maximum budget.";
+  } else {
+    const budgetMaxDigitError = getRequirementBudgetDigitLimitError(values.budgetMax, "Maximum Budget cannot exceed 9 digits.");
+    if (budgetMaxDigitError) nextErrors.budgetMax = budgetMaxDigitError;
+  }
 
   if (!nextErrors.budgetMin && !nextErrors.budgetMax && Number(values.budgetMax) < Number(values.budgetMin)) {
     nextErrors.budgetMax = "Maximum budget cannot be lower than minimum budget.";

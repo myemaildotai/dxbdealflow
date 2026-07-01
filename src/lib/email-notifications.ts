@@ -28,6 +28,7 @@ import {
   listingApprovedTemplate,
   listingSubmittedTemplate,
   manualReviewPendingTemplate,
+  maintenanceAvailabilityTemplate,
   newDealAlertTemplate,
   newMessageReceivedTemplate,
   profileCompletionReminderTemplate,
@@ -81,6 +82,13 @@ type BrokerEmailOtpEmail = {
   brokerUserId?: string | null;
   otp: string;
   expiresAt: string;
+};
+
+type MaintenanceNotifyRequestRow = {
+  id: string;
+  name: string;
+  email: string;
+  maintenance_version: number;
 };
 
 type BrokerRecipient = Pick<PlatformUser, "id" | "email" | "first_name" | "last_name" | "status"> & {
@@ -160,6 +168,20 @@ function getWhatsappShareUrl(listing: Pick<Listing, "id" | "title" | "price">) {
   const listingUrl = getListingUrl(listing.id);
   const text = `${listing.title} - ${formatCurrency(listing.price)} ${listingUrl}`;
   return `https://wa.me/?text=${encodeURIComponent(text)}`;
+}
+
+async function runInParallelBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(fn));
+    results.push(...batchResults);
+  }
+  return results;
 }
 
 function isBrokerRecipientActive(recipient: BrokerRecipient) {
@@ -300,6 +322,128 @@ export async function triggerWelcomeEarlyInterestEmail(data: ComingSoonInterestC
   });
 }
 
+export async function sendMaintenanceAvailabilityNotifications() {
+  const supabase = getServiceSupabase();
+  const { data: versionRow, error: versionError } = await supabase
+    .from("maintenance_notify_requests")
+    .select("maintenance_version")
+    .eq("status", "pending")
+    .order("maintenance_version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (versionError) {
+    throw new Error("Failed to load pending maintenance notification cycle.");
+  }
+
+  const activeVersion = Number((versionRow as { maintenance_version?: number | null } | null)?.maintenance_version || 0);
+
+  if (!activeVersion) {
+    return {
+      activeVersion: null,
+      attempted: 0,
+      sentOrAlreadySent: 0,
+      skipped: 0,
+      failed: 0,
+    };
+  }
+
+  const { data: requestRows, error: requestError } = await supabase
+    .from("maintenance_notify_requests")
+    .select("id, name, email, maintenance_version")
+    .eq("maintenance_version", activeVersion)
+    .eq("status", "pending")
+    .order("created_at", { ascending: true });
+
+  if (requestError) {
+    throw new Error("Failed to load pending maintenance notification requests.");
+  }
+
+  const requests = (requestRows as MaintenanceNotifyRequestRow[] | null) || [];
+  const successfulRequestIds: string[] = [];
+  let attempted = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const request of requests) {
+    const recipientEmail = request.email.trim().toLowerCase();
+    attempted += 1;
+
+    if (!isValidEmailAddress(recipientEmail)) {
+      skipped += 1;
+      console.error("[maintenance-availability] Skipping invalid recipient email.", {
+        requestId: request.id,
+        maintenanceVersion: activeVersion,
+      });
+      continue;
+    }
+
+    const result = await sendLoggedEmail({
+      supabase,
+      emailType: EMAIL_TYPES.maintenanceAvailability,
+      recipientEmail,
+      relatedEntityType: "maintenance_notify_requests",
+      relatedEntityId: request.id,
+      template: maintenanceAvailabilityTemplate({
+        name: request.name.trim() || "there",
+        platformUrl: buildAppUrl("/"),
+      }),
+      eventKey: `maintenance_availability:${activeVersion}:${recipientEmail}`,
+      metadata: {
+        maintenanceVersion: activeVersion,
+        requestId: request.id,
+      },
+      background: false,
+      enqueue: true,
+    });
+
+    if (result.ok) {
+      successfulRequestIds.push(request.id);
+    } else if (result.status === "skipped") {
+      skipped += 1;
+    } else {
+      failed += 1;
+    }
+  }
+
+  if (successfulRequestIds.length > 0) {
+    const notifiedAt = new Date().toISOString();
+    const updateRequest =
+      successfulRequestIds.length === requests.length
+        ? supabase
+            .from("maintenance_notify_requests")
+            .update({
+              status: "notified",
+              notified_at: notifiedAt,
+            })
+            .eq("maintenance_version", activeVersion)
+            .eq("status", "pending")
+        : supabase
+            .from("maintenance_notify_requests")
+            .update({
+              status: "notified",
+              notified_at: notifiedAt,
+            })
+            .in("id", successfulRequestIds)
+            .eq("maintenance_version", activeVersion)
+            .eq("status", "pending");
+
+    const { error: updateError } = await updateRequest;
+
+    if (updateError) {
+      throw new Error("Maintenance availability emails were sent, but notification requests could not be marked as notified.");
+    }
+  }
+
+  return {
+    activeVersion,
+    attempted,
+    sentOrAlreadySent: successfulRequestIds.length,
+    skipped,
+    failed,
+  };
+}
+
 export async function triggerBrokerVerificationSuccessEmail(data: {
   userId: string;
   email: string;
@@ -320,6 +464,7 @@ export async function triggerBrokerVerificationSuccessEmail(data: {
       trigger: "rera_auto_approval",
     },
     background: true,
+    enqueue: true,
   });
 }
 
@@ -345,6 +490,7 @@ export async function triggerManualReviewPendingEmail(data: {
       verificationStatus: data.verificationStatus || null,
     },
     background: true,
+    enqueue: true,
   });
 }
 
@@ -369,6 +515,7 @@ export async function triggerListingSubmittedEmail(data: {
       listingTitle: data.listingTitle,
     },
     background: true,
+    enqueue: true,
   });
 }
 
@@ -418,6 +565,7 @@ export async function triggerListingApprovedEmail(data: {
       notes: data.notes || null,
     },
     background: true,
+    enqueue: true,
   });
 }
 
@@ -487,17 +635,17 @@ export async function triggerNewDealAlertForListing(data: {
   let skipped = 0;
   let failed = 0;
 
-  for (const recipient of recipients) {
+  const eligibleRecipients = recipients.filter((recipient) => {
     if (!data.includeListingOwner && recipient.id === listing.created_by) {
-      continue;
+      return false;
     }
+    return !!recipient.brokerProfile?.share_latest_deals;
+  });
 
-    if (!recipient.brokerProfile?.share_latest_deals) {
-      continue;
-    }
+  attempted = eligibleRecipients.length;
 
-    attempted += 1;
-    const result = await sendLoggedEmail({
+  const batchResults = await runInParallelBatches(eligibleRecipients, 10, (recipient) =>
+    sendLoggedEmail({
       supabase,
       emailType: EMAIL_TYPES.newDealAlert,
       recipientEmail: recipient.email,
@@ -526,8 +674,11 @@ export async function triggerNewDealAlertForListing(data: {
         dealType: listing.deal_type,
       },
       background: true,
-    });
+      enqueue: true,
+    })
+  );
 
+  for (const result of batchResults) {
     if (result.ok || result.status === "pending") {
       sentOrQueued += 1;
     } else if (result.status === "skipped") {
@@ -601,6 +752,7 @@ export async function triggerNewMessageEmail(data: {
       listingTitle,
     },
     background: true,
+    enqueue: true,
   });
 }
 
@@ -639,6 +791,7 @@ async function sendRequirementMatchFoundEmail(params: {
       matchedListingIds: params.matchedListings.map((listing) => listing.id),
     },
     background: true,
+    enqueue: true,
   });
 }
 
@@ -696,26 +849,84 @@ export async function triggerRequirementMatchFoundForListing(data: { listingId: 
   }
 
   const requirements = (requirementsResult.data as Requirement[] | null) || [];
-  const results: Array<LoggedEmailResult | null> = [];
 
+  // 1. Batch resolve owners for all requirements
+  const brokerIdsToLookup = requirements
+    .filter((r) => !r.posted_by && r.broker_id)
+    .map((r) => r.broker_id);
+
+  const brokerProfileMap = new Map<string, string>(); // broker_id -> user_id
+  if (brokerIdsToLookup.length > 0) {
+    const { data: profiles } = await supabase
+      .from("broker_profiles")
+      .select("id, user_id")
+      .in("id", brokerIdsToLookup);
+    if (profiles) {
+      for (const p of profiles) {
+        if (p.user_id) {
+          brokerProfileMap.set(p.id, p.user_id);
+        }
+      }
+    }
+  }
+
+  const userIdsToLookup = new Set<string>();
+  for (const r of requirements) {
+    if (r.posted_by) {
+      userIdsToLookup.add(r.posted_by);
+    } else if (r.broker_id) {
+      const userId = brokerProfileMap.get(r.broker_id);
+      if (userId) {
+        userIdsToLookup.add(userId);
+      }
+    }
+  }
+
+  const userMap = new Map<string, Pick<PlatformUser, "id" | "email" | "first_name" | "last_name" | "status">>();
+  if (userIdsToLookup.size > 0) {
+    const { data: users } = await supabase
+      .from("users")
+      .select("id, email, first_name, last_name, status")
+      .in("id", Array.from(userIdsToLookup));
+    if (users) {
+      for (const u of users) {
+        userMap.set(u.id, u);
+      }
+    }
+  }
+
+  const getResolvedOwner = (requirement: Requirement) => {
+    if (requirement.posted_by) {
+      return userMap.get(requirement.posted_by) || null;
+    }
+    if (requirement.broker_id) {
+      const userId = brokerProfileMap.get(requirement.broker_id);
+      return userId ? (userMap.get(userId) || null) : null;
+    }
+    return null;
+  };
+
+  // 2. Filter matching requirements and set up parameters
+  const eligibleMatches = [];
   for (const requirement of requirements) {
-    const owner = await resolveRequirementOwner(supabase, requirement);
-
+    const owner = getResolvedOwner(requirement);
     if (!owner || owner.id === listing.created_by || !isListingMatchingRequirement(requirement, listing)) {
       continue;
     }
-
-    results.push(
-      await sendRequirementMatchFoundEmail({
-        supabase,
-        requirement,
-        owner,
-        matchedListings: [listing],
-        eventKey: `requirement_match_found:${requirement.id}:listing:${listing.id}`,
-        trigger: "listing_approved",
-      }),
-    );
+    eligibleMatches.push({ requirement, owner });
   }
+
+  // 3. Parallelize enqueuing calls in chunked batches of 10
+  const results = await runInParallelBatches(eligibleMatches, 10, ({ requirement, owner }) =>
+    sendRequirementMatchFoundEmail({
+      supabase,
+      requirement,
+      owner,
+      matchedListings: [listing],
+      eventKey: `requirement_match_found:${requirement.id}:listing:${listing.id}`,
+      trigger: "listing_approved",
+    })
+  );
 
   return results;
 }
@@ -805,13 +1016,11 @@ export async function sendWeeklyDealDigestEmails() {
   let skipped = 0;
   let failed = 0;
 
-  for (const recipient of recipients) {
-    if (!recipient.brokerProfile?.share_latest_deals) {
-      continue;
-    }
+  const eligibleRecipients = recipients.filter((recipient) => !!recipient.brokerProfile?.share_latest_deals);
+  attempted = eligibleRecipients.length;
 
-    attempted += 1;
-    const result = await sendLoggedEmail({
+  const batchResults = await runInParallelBatches(eligibleRecipients, 10, (recipient) =>
+    sendLoggedEmail({
       supabase,
       emailType: EMAIL_TYPES.weeklyDealDigest,
       recipientEmail: recipient.email,
@@ -834,8 +1043,11 @@ export async function sendWeeklyDealDigestEmails() {
         biggestDiscountDealId: digest.biggestDiscountDeal?.id || null,
       },
       background: false,
-    });
+      enqueue: true,
+    })
+  );
 
+  for (const result of batchResults) {
     if (result.ok || result.status === "pending") {
       sentOrQueued += 1;
     } else if (result.status === "skipped") {
@@ -869,16 +1081,15 @@ export async function sendProfileCompletionReminderEmails() {
   let skipped = 0;
   let failed = 0;
 
-  for (const recipient of recipients) {
+  const eligibleRecipients = recipients.filter((recipient) => {
     const profile = profileMap.get(recipient.id);
-    const incomplete = profile && (!profile.profile_photo || !profile.bio?.trim());
+    return profile && (!profile.profile_photo || !profile.bio?.trim());
+  });
+  attempted = eligibleRecipients.length;
 
-    if (!incomplete) {
-      continue;
-    }
-
-    attempted += 1;
-    const result = await sendLoggedEmail({
+  const batchResults = await runInParallelBatches(eligibleRecipients, 10, (recipient) => {
+    const profile = profileMap.get(recipient.id)!;
+    return sendLoggedEmail({
       supabase,
       emailType: EMAIL_TYPES.profileCompletionReminder,
       recipientEmail: recipient.email,
@@ -896,8 +1107,11 @@ export async function sendProfileCompletionReminderEmails() {
         profileCreatedAt: profile.created_at,
       },
       background: false,
+      enqueue: true,
     });
+  });
 
+  for (const result of batchResults) {
     if (result.ok || result.status === "pending") {
       sentOrQueued += 1;
     } else if (result.status === "skipped") {
@@ -921,6 +1135,7 @@ async function sendSimpleLoggedEmail(data: {
   metadata?: Record<string, unknown>;
   replyTo?: string | null;
   background?: boolean;
+  enqueue?: boolean;
 }) {
   const recipients = Array.isArray(data.recipientEmail) ? data.recipientEmail : [data.recipientEmail];
   const results: LoggedEmailResult[] = [];
@@ -942,6 +1157,7 @@ async function sendSimpleLoggedEmail(data: {
         metadata: data.metadata,
         replyTo: data.replyTo && isValidEmailAddress(data.replyTo) ? data.replyTo : undefined,
         background: data.background ?? true,
+        enqueue: data.enqueue,
       }),
     );
   }
@@ -972,6 +1188,7 @@ export async function notifyBrokerPublicEnquiry(data: PublicEnquiryEmail): Promi
       contactEmail: data.contactEmail,
     },
     replyTo: data.contactEmail,
+    enqueue: true,
   });
 }
 

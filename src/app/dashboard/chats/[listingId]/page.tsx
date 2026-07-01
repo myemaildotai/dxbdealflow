@@ -4070,14 +4070,14 @@ function ListingChatPageContent() {
     ? getMailtoLink(participantEmail, `${isRequirementMatchConversation ? "Requirement match" : "Listing chat"} for ${listingTitle}`, `Hi ${activeParticipantName},`)
     : null;
   const requirementDetailSummary = activeRequirement
-    ? [getRequirementBedroomsLabel(activeRequirement.bedrooms), activeRequirement.timeline].filter(Boolean).join(" - ")
+    ? [getRequirementBedroomsLabel(activeRequirement.bedrooms)].filter(Boolean).join(" - ")
     : null;
   const requirementItems: ContextDetailItem[] = activeRequirement
     ? [
         { icon: <AutoAwesomeRounded className="!h-4 !w-4" />, value: getRequirementBudgetLabel(activeRequirement) },
         { icon: <PlaceRounded className="!h-4 !w-4" />, value: activeRequirement.area || "Requirement area pending" },
         { icon: <HomeWorkOutlined className="!h-4 !w-4" />, value: formatPropertyType(activeRequirement.property_type) },
-        { icon: <BedRounded className="!h-4 !w-4" />, value: requirementDetailSummary || "Bedrooms or timeline pending" },
+        { icon: <BedRounded className="!h-4 !w-4" />, value: requirementDetailSummary || "Bedrooms pending" },
       ]
     : [];
   const contextSections: ContextDetailSection[] = isRequirementMatchConversation

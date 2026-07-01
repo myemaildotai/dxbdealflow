@@ -8,7 +8,6 @@ import type {
   Listing,
   PlatformUser,
   Requirement,
-  RequirementMatch,
 } from "@/lib/deal-types";
 import { isActiveListingStatus } from "@/lib/deal-utils";
 import {
@@ -139,27 +138,6 @@ async function readCount(query: PromiseLike<CountResult>) {
   return result.count || 0;
 }
 
-async function fetchRequirementMatchCount(
-  supabase: SupabaseClient,
-  brokerProfileId: string | null,
-  status?: RequirementMatch["status"]
-) {
-  if (!brokerProfileId) {
-    return 0;
-  }
-
-  let query = supabase
-    .from("requirement_matches")
-    .select("id, requirements!inner(id)", { count: "exact", head: true })
-    .eq("requirements.broker_id", brokerProfileId);
-
-  if (status) {
-    query = query.eq("status", status);
-  }
-
-  return readCount(query);
-}
-
 async function fetchBrokerDashboardMetricsRpc(
   supabase: SupabaseClient,
   userId: string,
@@ -209,137 +187,167 @@ async function fetchBrokerDashboardMetricsFallback(
   brokerProfileId: string | null
 ): Promise<BrokerDashboardData["metrics"]> {
   const weekStartIso = getWeekStartIso();
+  const weekStartMs = new Date(weekStartIso).getTime();
+
   const chatCountsPromise = fetchBrokerChatConversationCounts(supabase, userId);
 
+  const listingsPromise = supabase
+    .from("listings")
+    .select("status, deleted_at, updated_at")
+    .eq("created_by", userId);
+
+  const leadsPromise = supabase
+    .from("leads")
+    .select("lead_status, created_at")
+    .eq("to_user_id", userId);
+
+  const chatConversationsPromise = readCount(
+    supabase
+      .from("chat_conversations")
+      .select("id", { count: "exact", head: true })
+      .or(`owner_user_id.eq.${userId},broker_user_id.eq.${userId}`)
+      .gte("last_message_at", weekStartIso)
+  );
+
+  const requirementsPromise = brokerProfileId
+    ? supabase
+        .from("requirements")
+        .select("is_active, deleted_at, created_at")
+        .eq("broker_id", brokerProfileId)
+    : Promise.resolve({ data: null, error: null });
+
+  const notificationsPromise = readCount(
+    supabase
+      .from("notifications")
+      .select("id", { count: "exact", head: true })
+      .eq("recipient_user_id", userId)
+      .eq("recipient_role", "broker")
+      .eq("type", "requirement_match_found")
+      .eq("status", "active")
+      .eq("is_read", false)
+  );
+
+  const matchesPromise = brokerProfileId
+    ? supabase
+        .from("requirement_matches")
+        .select("status, requirements!inner(id)")
+        .eq("requirements.broker_id", brokerProfileId)
+    : Promise.resolve({ data: null, error: null });
+
   const [
-    totalListings,
-    activeListings,
-    pendingListings,
-    attentionListings,
-    listingsThisWeek,
-    pendingListingsThisWeek,
-    publicEnquiries,
-    newEnquiries,
-    enquiriesThisWeek,
+    listingsRes,
+    leadsRes,
     chatsThisWeek,
-    totalRequirements,
-    activeRequirements,
-    requirementsThisWeek,
-    closedRequirements,
-    inactiveRequirements,
+    requirementsRes,
     unreadRequirementNotifications,
     chatCounts,
-    incomingRequirementMatches,
-    contactedRequirementMatches,
+    matchesRes,
   ] = await Promise.all([
-    readCount(supabase.from("listings").select("id", { count: "exact", head: true }).eq("created_by", userId).is("deleted_at", null)),
-    readCount(
-      supabase
-        .from("listings")
-        .select("id", { count: "exact", head: true })
-        .eq("created_by", userId)
-        .is("deleted_at", null)
-        .in("status", ["active", "approved"])
-    ),
-    readCount(
-      supabase
-        .from("listings")
-        .select("id", { count: "exact", head: true })
-        .eq("created_by", userId)
-        .is("deleted_at", null)
-        .eq("status", "pending")
-    ),
-    readCount(
-      supabase
-        .from("listings")
-        .select("id", { count: "exact", head: true })
-        .eq("created_by", userId)
-        .is("deleted_at", null)
-        .in("status", ATTENTION_LISTING_STATUSES)
-    ),
-    readCount(
-      supabase
-        .from("listings")
-        .select("id", { count: "exact", head: true })
-        .eq("created_by", userId)
-        .is("deleted_at", null)
-        .gte("updated_at", weekStartIso)
-    ),
-    readCount(
-      supabase
-        .from("listings")
-        .select("id", { count: "exact", head: true })
-        .eq("created_by", userId)
-        .is("deleted_at", null)
-        .eq("status", "pending")
-        .gte("updated_at", weekStartIso)
-    ),
-    readCount(supabase.from("leads").select("id", { count: "exact", head: true }).eq("to_user_id", userId)),
-    readCount(supabase.from("leads").select("id", { count: "exact", head: true }).eq("to_user_id", userId).eq("lead_status", "new")),
-    readCount(supabase.from("leads").select("id", { count: "exact", head: true }).eq("to_user_id", userId).gte("created_at", weekStartIso)),
-    readCount(
-      supabase
-        .from("chat_conversations")
-        .select("id", { count: "exact", head: true })
-        .or(`owner_user_id.eq.${userId},broker_user_id.eq.${userId}`)
-        .gte("last_message_at", weekStartIso)
-    ),
-    brokerProfileId
-      ? readCount(supabase.from("requirements").select("id", { count: "exact", head: true }).eq("broker_id", brokerProfileId))
-      : Promise.resolve(0),
-    brokerProfileId
-      ? readCount(
-          supabase
-            .from("requirements")
-            .select("id", { count: "exact", head: true })
-            .eq("broker_id", brokerProfileId)
-            .eq("is_active", true)
-        )
-      : Promise.resolve(0),
-    brokerProfileId
-      ? readCount(
-          supabase
-            .from("requirements")
-            .select("id", { count: "exact", head: true })
-            .eq("broker_id", brokerProfileId)
-            .gte("created_at", weekStartIso)
-        )
-      : Promise.resolve(0),
-    brokerProfileId
-      ? readCount(
-          supabase
-            .from("requirements")
-            .select("id", { count: "exact", head: true })
-            .eq("broker_id", brokerProfileId)
-            .not("deleted_at", "is", null)
-        )
-      : Promise.resolve(0),
-    brokerProfileId
-      ? readCount(
-          supabase
-            .from("requirements")
-            .select("id", { count: "exact", head: true })
-            .eq("broker_id", brokerProfileId)
-            .eq("is_active", false)
-            .is("deleted_at", null)
-        )
-      : Promise.resolve(0),
-    brokerProfileId
-      ? readCount(
-          supabase
-            .from("notifications")
-            .select("id", { count: "exact", head: true })
-            .eq("recipient_user_id", userId)
-            .eq("recipient_role", "broker")
-            .eq("type", "requirement_match_found")
-            .eq("status", "active")
-            .eq("is_read", false)
-        )
-      : Promise.resolve(0),
+    listingsPromise,
+    leadsPromise,
+    chatConversationsPromise,
+    requirementsPromise,
+    notificationsPromise,
     chatCountsPromise,
-    fetchRequirementMatchCount(supabase, brokerProfileId),
-    fetchRequirementMatchCount(supabase, brokerProfileId, "contacted"),
+    matchesPromise,
   ]);
+
+  if (listingsRes.error) {
+    throw new Error(listingsRes.error.message || "Failed to load listings metrics.");
+  }
+  if (leadsRes.error) {
+    throw new Error(leadsRes.error.message || "Failed to load leads metrics.");
+  }
+  if (requirementsRes.error) {
+    throw new Error(requirementsRes.error.message || "Failed to load requirements metrics.");
+  }
+  if (matchesRes.error) {
+    throw new Error(matchesRes.error.message || "Failed to load requirement matches metrics.");
+  }
+
+  const listingsData = listingsRes.data || [];
+  const leadsData = leadsRes.data || [];
+  const requirementsData = requirementsRes.data || [];
+  const matchesData = matchesRes.data || [];
+
+  let totalListings = 0;
+  let activeListings = 0;
+  let pendingListings = 0;
+  let attentionListings = 0;
+  let listingsThisWeek = 0;
+  let pendingListingsThisWeek = 0;
+
+  for (const listing of listingsData) {
+    if (listing.deleted_at !== null) continue;
+    totalListings++;
+
+    const status = listing.status;
+    if (status === "active" || status === "approved") {
+      activeListings++;
+    }
+    if (status === "pending") {
+      pendingListings++;
+    }
+    if (ATTENTION_LISTING_STATUSES.includes(status || "")) {
+      attentionListings++;
+    }
+
+    const updatedAtMs = listing.updated_at ? new Date(listing.updated_at).getTime() : 0;
+    if (updatedAtMs >= weekStartMs) {
+      listingsThisWeek++;
+      if (status === "pending") {
+        pendingListingsThisWeek++;
+      }
+    }
+  }
+
+  let publicEnquiries = 0;
+  let newEnquiries = 0;
+  let enquiriesThisWeek = 0;
+
+  for (const lead of leadsData) {
+    publicEnquiries++;
+    if (lead.lead_status === "new") {
+      newEnquiries++;
+    }
+    const createdAtMs = lead.created_at ? new Date(lead.created_at).getTime() : 0;
+    if (createdAtMs >= weekStartMs) {
+      enquiriesThisWeek++;
+    }
+  }
+
+  let totalRequirements = 0;
+  let activeRequirements = 0;
+  let requirementsThisWeek = 0;
+  let closedRequirements = 0;
+  let inactiveRequirements = 0;
+
+  for (const req of requirementsData) {
+    totalRequirements++;
+    if (req.is_active === true) {
+      activeRequirements++;
+    }
+    const createdAtMs = req.created_at ? new Date(req.created_at).getTime() : 0;
+    if (createdAtMs >= weekStartMs) {
+      requirementsThisWeek++;
+    }
+    if (req.deleted_at !== null) {
+      closedRequirements++;
+    }
+    if (req.is_active === false && req.deleted_at === null) {
+      inactiveRequirements++;
+    }
+  }
+
+  let incomingRequirementMatches = 0;
+  let contactedRequirementMatches = 0;
+
+  for (const match of matchesData) {
+    incomingRequirementMatches++;
+    if (match.status === "contacted") {
+      contactedRequirementMatches++;
+    }
+  }
 
   return {
     totalListings,
@@ -370,26 +378,9 @@ export async function fetchBrokerDashboardMetrics(
   userId: string,
   brokerProfileId: string | null
 ): Promise<BrokerDashboardData["metrics"]> {
-  const [metrics, unreadRequirementNotifications] = await Promise.all([
-    fetchBrokerDashboardMetricsRpc(supabase, userId, brokerProfileId).then(
-      (rpcMetrics) => rpcMetrics || fetchBrokerDashboardMetricsFallback(supabase, userId, brokerProfileId)
-    ),
-    readCount(
-      supabase
-        .from("notifications")
-        .select("id", { count: "exact", head: true })
-        .eq("recipient_user_id", userId)
-        .eq("recipient_role", "broker")
-        .eq("type", "requirement_match_found")
-        .eq("status", "active")
-        .eq("is_read", false)
-    ),
-  ]);
-
-  return {
-    ...metrics,
-    unreadRequirementNotifications,
-  };
+  return fetchBrokerDashboardMetricsRpc(supabase, userId, brokerProfileId).then(
+    (rpcMetrics) => rpcMetrics || fetchBrokerDashboardMetricsFallback(supabase, userId, brokerProfileId)
+  );
 }
 
 function createDashboardPayload(

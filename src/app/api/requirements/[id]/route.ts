@@ -6,11 +6,18 @@ import { enrichRequirementsWithSubmissionMeta, fetchBrokerProfileByUserId } from
 import type { Requirement, RequirementDeactivatedBy } from "@/lib/deal-types";
 import { parseRequirementBedroomOption } from "@/lib/requirements";
 import { markNotificationRead } from "@/lib/notifications-server";
+import {
+  getRequirementBudgetDigitLimitError,
+  hasNumericInput,
+  parseOptionalNumericInput,
+} from "@/lib/numeric-field-validation";
 
 type RequirementActivityValue = string | number | boolean | null;
 
 function getRequirementPayload(body: Record<string, unknown>) {
   const rawBedrooms = String(body.bedrooms || "").trim();
+  const budgetMinInput = body.budgetMin ?? body.budget_min ?? null;
+  const budgetMaxInput = body.budgetMax ?? body.budget_max ?? null;
 
   return {
     title: String(body.title || "").trim() || null,
@@ -18,8 +25,8 @@ function getRequirementPayload(body: Record<string, unknown>) {
     property_type: String(body.propertyType || body.property_type || "apartment").trim(),
     deal_type: String(body.dealType || body.deal_type || "secondary").trim(),
     bedrooms: parseRequirementBedroomOption(rawBedrooms) || rawBedrooms || null,
-    budget_min: body.budgetMin || body.budget_min ? Number(body.budgetMin || body.budget_min) : null,
-    budget_max: body.budgetMax || body.budget_max ? Number(body.budgetMax || body.budget_max) : null,
+    budget_min: parseOptionalNumericInput(budgetMinInput),
+    budget_max: parseOptionalNumericInput(budgetMaxInput),
     area: String(body.area || "").trim(),
     urgency: String(body.urgency || "medium").trim(),
     timeline: String(body.timeline || "").trim() || null,
@@ -103,18 +110,38 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   }
 
   const body = await request.json();
+  const budgetMinInput = body.budgetMin ?? body.budget_min ?? null;
+  const budgetMaxInput = body.budgetMax ?? body.budget_max ?? null;
   const payload = getRequirementPayload(body);
 
   if (!payload.area) {
     return jsonError("Area is required.", 400);
   }
 
-  if (payload.budget_min !== null && !Number.isFinite(payload.budget_min)) {
+  if (hasNumericInput(budgetMinInput) && payload.budget_min === null) {
     return jsonError("Minimum budget must be numeric.", 400);
   }
 
-  if (payload.budget_max !== null && !Number.isFinite(payload.budget_max)) {
+  if (hasNumericInput(budgetMaxInput) && payload.budget_max === null) {
     return jsonError("Maximum budget must be numeric.", 400);
+  }
+
+  if (payload.budget_min !== null && payload.budget_min < 0) {
+    return jsonError("Minimum budget must be zero or higher.", 400);
+  }
+
+  if (payload.budget_max !== null && payload.budget_max < 0) {
+    return jsonError("Maximum budget must be zero or higher.", 400);
+  }
+
+  const budgetMinDigitError = getRequirementBudgetDigitLimitError(budgetMinInput, "Minimum Budget cannot exceed 9 digits.");
+  if (budgetMinDigitError) {
+    return jsonError(budgetMinDigitError, 400);
+  }
+
+  const budgetMaxDigitError = getRequirementBudgetDigitLimitError(budgetMaxInput, "Maximum Budget cannot exceed 9 digits.");
+  if (budgetMaxDigitError) {
+    return jsonError(budgetMaxDigitError, 400);
   }
 
   if (payload.budget_min !== null && payload.budget_max !== null && payload.budget_min > payload.budget_max) {

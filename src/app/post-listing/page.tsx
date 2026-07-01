@@ -27,10 +27,19 @@ import {
   uploadListingDocumentsDirectly,
 } from "@/lib/listing-document-upload-client";
 import { getHandoverDateValidationMessage, getMinimumHandoverDateKey } from "@/lib/handover-date";
+import { getListingPercentageValidationError } from "@/lib/numeric-field-validation";
+import {
+  getListingQualityState,
+  type ListingQualityFieldKey,
+  type ListingQualityState,
+} from "@/lib/listing-quality";
 import {
   compressImagesForUpload,
   getImageUploadValidationError,
+  getListingImageNormalizedFileNameCandidates,
   IMAGE_UPLOAD_ACCEPT,
+  LISTING_IMAGE_DUPLICATE_FILENAME_MESSAGE,
+  normalizeListingImageFileName,
 } from "@/lib/image-upload";
 import {
   LISTING_BEDROOM_OPTIONS as BEDROOM_OPTIONS,
@@ -45,7 +54,7 @@ const MAX_LISTING_IMAGES = 10;
 const PROPERTY_TYPE_OPTIONS = ["apartment", "villa", "townhouse", "penthouse", "office", "retail", "warehouse", "land"] as const;
 const DEAL_TYPE_OPTIONS = ["secondary", "off_plan", "distressed", "urgent_sale"] as const;
 const SELECT_OPTION_STYLE = { backgroundColor: "#ffffff", color: "#0f172a" } as const;
-type FieldKey = keyof ListingFormValues | "images" | "documents";
+type FieldKey = ListingQualityFieldKey;
 type ListingErrors = Partial<Record<FieldKey, string>>;
 type ListingTouched = Partial<Record<FieldKey, boolean>>;
 type PreviewItem =
@@ -62,32 +71,13 @@ type PreviewItem =
       title: string;
       imageUrl?: string;
       file: File;
-    };
-type ProgressItem = {
-  key: FieldKey;
-  label: string;
-  complete: boolean;
-  required: boolean;
-  contribution: number;
 };
-type ListingProgressState = {
-  items: ProgressItem[];
-  percentage: number;
-  completedCount: number;
-  totalCount: number;
-  remainingCount: number;
-  completedRequiredCount: number;
-  requiredCount: number;
-  score: number;
-  maxScore: number;
-};
+type ListingProgressState = ListingQualityState;
 const FIELD_ORDER: FieldKey[] = ["title", "propertyType", "areaId", "price", "bedrooms", "sizeSqft", "developer", "dealType", "handoverDate", "yieldPercent", "coBrokePercent", "description", "images"];
 const EXISTING_IMAGE_KEY_PREFIX = "existing:";
 const NEW_IMAGE_KEY_PREFIX = "new:";
 const EXISTING_DOCUMENT_KEY_PREFIX = "existing-document:";
 const NEW_DOCUMENT_KEY_PREFIX = "new-document:";
-const RECOMMENDED_IMAGE_COUNT = 6;
-const RECOMMENDED_DOCUMENT_COUNT = 1;
 const PROGRESS_MILESTONES = [0, 25, 50, 75, 100] as const;
 const IMAGE_GALLERY_DRAG_SCROLL_EDGE_PX = 72;
 const IMAGE_GALLERY_DRAG_SCROLL_MAX_STEP_PX = 26;
@@ -396,8 +386,16 @@ function validateForm(values: ListingFormValues, totalImageCount: number): Listi
   if (!values.dealType) nextErrors.dealType = "Select a deal type.";
   const handoverDateError = getHandoverDateValidationMessage(values.handoverDate);
   if (handoverDateError) nextErrors.handoverDate = handoverDateError;
-  if (values.yieldPercent && !isValidNumber(values.yieldPercent)) nextErrors.yieldPercent = "Enter a valid yield percentage.";
-  if (values.coBrokePercent && !isValidNumber(values.coBrokePercent)) nextErrors.coBrokePercent = "Enter a valid co-broke percentage.";
+  const yieldPercentError = getListingPercentageValidationError(values.yieldPercent, {
+    invalidMessage: "Enter a valid yield percentage.",
+    maxMessage: "Yield Percent cannot exceed 100.",
+  });
+  if (yieldPercentError) nextErrors.yieldPercent = yieldPercentError;
+  const coBrokePercentError = getListingPercentageValidationError(values.coBrokePercent, {
+    invalidMessage: "Enter a valid co-broke percentage.",
+    maxMessage: "Co-broke Percent cannot exceed 100.",
+  });
+  if (coBrokePercentError) nextErrors.coBrokePercent = coBrokePercentError;
   if (!values.description.trim()) nextErrors.description = "Enter a description.";
   if (totalImageCount < MIN_LISTING_IMAGES) nextErrors.images = "Upload at least 1 image.";
   if (totalImageCount > MAX_LISTING_IMAGES) nextErrors.images = `You can upload up to ${MAX_LISTING_IMAGES} images.`;
@@ -409,10 +407,6 @@ function sanitizeNumberInput(value: string) {
   if (!cleaned) return "";
   if (/^\d*\.?\d*$/.test(cleaned)) return cleaned;
   return null;
-}
-
-function hasValue(value: string) {
-  return value.trim().length > 0;
 }
 
 function isValidNumber(value: string) {
@@ -461,6 +455,24 @@ function getImageValidationMessage(files: File[], existingImageCount = 0) {
   }
 
   return "";
+}
+
+function addKnownListingImageFileName(fileName: string, knownFileNames: Set<string>) {
+  const normalizedFileName = normalizeListingImageFileName(fileName);
+  if (normalizedFileName) {
+    knownFileNames.add(normalizedFileName);
+  }
+}
+
+function hasDuplicateListingImageFileName(fileName: string, knownFileNames: Set<string>) {
+  const fileNameCandidates = getListingImageNormalizedFileNameCandidates(fileName);
+  const hasDuplicate = fileNameCandidates.some((candidate) => knownFileNames.has(candidate));
+
+  if (!hasDuplicate) {
+    fileNameCandidates.forEach((candidate) => knownFileNames.add(candidate));
+  }
+
+  return hasDuplicate;
 }
 
 function dragEventHasFiles(dataTransfer: DataTransfer | null) {
@@ -537,62 +549,15 @@ function buildPreviewItems(existingImages: ListingImage[], newImages: File[], pr
   return orderedItems;
 }
 
-function getNormalizedContribution(currentCount: number, targetCount: number) {
-  if (currentCount <= 0 || targetCount <= 0) {
-    return 0;
-  }
-
-  return Math.min(currentCount / targetCount, 1);
-}
-
 function getListingProgressState(values: ListingFormValues, totalImageCount: number, totalDocumentCount: number, errors: ListingErrors): ListingProgressState {
-  const imageContribution = !errors.images ? getNormalizedContribution(totalImageCount, RECOMMENDED_IMAGE_COUNT) : 0;
-  const documentContribution = getNormalizedContribution(totalDocumentCount, RECOMMENDED_DOCUMENT_COUNT);
-  const items: ProgressItem[] = [
-    { key: "title", label: "Listing title", required: true, complete: hasValue(values.title) && !errors.title, contribution: hasValue(values.title) && !errors.title ? 1 : 0 },
-    { key: "propertyType", label: "Property type", required: true, complete: Boolean(values.propertyType) && !errors.propertyType, contribution: Boolean(values.propertyType) && !errors.propertyType ? 1 : 0 },
-    { key: "areaId", label: "Area", required: true, complete: hasValue(values.areaId) && !errors.areaId, contribution: hasValue(values.areaId) && !errors.areaId ? 1 : 0 },
-    { key: "dealType", label: "Deal type", required: true, complete: Boolean(values.dealType) && !errors.dealType, contribution: Boolean(values.dealType) && !errors.dealType ? 1 : 0 },
-    { key: "price", label: "Price", required: true, complete: hasValue(values.price) && !errors.price, contribution: hasValue(values.price) && !errors.price ? 1 : 0 },
-    { key: "sizeSqft", label: "Size", required: true, complete: hasValue(values.sizeSqft) && !errors.sizeSqft, contribution: hasValue(values.sizeSqft) && !errors.sizeSqft ? 1 : 0 },
-    { key: "bedrooms", label: "Bedrooms", required: true, complete: hasValue(values.bedrooms) && !errors.bedrooms, contribution: hasValue(values.bedrooms) && !errors.bedrooms ? 1 : 0 },
-    { key: "developer", label: "Developer", required: true, complete: hasValue(values.developer) && !errors.developer, contribution: hasValue(values.developer) && !errors.developer ? 1 : 0 },
-    { key: "description", label: "Description", required: true, complete: hasValue(values.description) && !errors.description, contribution: hasValue(values.description) && !errors.description ? 1 : 0 },
-    {
-      key: "images",
-      label: "Images",
-      required: true,
-      complete: totalImageCount >= MIN_LISTING_IMAGES && totalImageCount <= MAX_LISTING_IMAGES && !errors.images,
-      contribution: imageContribution,
-    },
-    { key: "paymentPlan", label: "Payment plan", required: false, complete: hasValue(values.paymentPlan), contribution: hasValue(values.paymentPlan) ? 1 : 0 },
-    { key: "handoverDate", label: "Handover date", required: false, complete: hasValue(values.handoverDate) && !errors.handoverDate, contribution: hasValue(values.handoverDate) && !errors.handoverDate ? 1 : 0 },
-    { key: "yieldPercent", label: "Yield percent", required: false, complete: hasValue(values.yieldPercent) && !errors.yieldPercent, contribution: hasValue(values.yieldPercent) && !errors.yieldPercent ? 1 : 0 },
-    { key: "coBrokePercent", label: "Co-broke percent", required: false, complete: hasValue(values.coBrokePercent) && !errors.coBrokePercent, contribution: hasValue(values.coBrokePercent) && !errors.coBrokePercent ? 1 : 0 },
-    { key: "paymentTerms", label: "Payment terms", required: false, complete: hasValue(values.paymentTerms), contribution: hasValue(values.paymentTerms) ? 1 : 0 },
-    { key: "notes", label: "Notes", required: false, complete: hasValue(values.notes), contribution: hasValue(values.notes) ? 1 : 0 },
-    { key: "documents", label: "Supporting files", required: false, complete: totalDocumentCount > 0, contribution: documentContribution },
-  ];
-
-  const completedCount = items.filter((item) => item.complete).length;
-  const requiredItems = items.filter((item) => item.required);
-  const completedRequiredCount = requiredItems.filter((item) => item.complete).length;
-  const score = items.reduce((total, item) => total + item.contribution, 0);
-  const maxScore = Math.max(items.length, 1);
-  const rawPercentage = (score / maxScore) * 100;
-  const percentage = score >= maxScore ? 100 : Math.max(0, Math.min(99, Math.round(rawPercentage)));
-
-  return {
-    items,
-    percentage,
-    completedCount,
-    totalCount: items.length,
-    remainingCount: items.length - completedCount,
-    completedRequiredCount,
-    requiredCount: requiredItems.length,
-    score,
-    maxScore,
-  };
+  return getListingQualityState({
+    ...values,
+    documentCount: totalDocumentCount,
+    errors,
+    imageCount: totalImageCount,
+    maxImageCount: MAX_LISTING_IMAGES,
+    minImageCount: MIN_LISTING_IMAGES,
+  });
 }
 
 function UploadIcon() {
@@ -873,15 +838,32 @@ function PostListingPageContent() {
 
     setTouched((current) => ({ ...current, images: true }));
 
+    let duplicateFileNameFound = false;
+    const currentFileNames = new Set<string>();
+    if (isEditMode) {
+      images.forEach((file) => addKnownListingImageFileName(file.name, currentFileNames));
+      existingImages.forEach((image) => addKnownListingImageFileName(image.file_name, currentFileNames));
+    }
+
     const sourceKeys = new Set<string>();
     const uniqueFiles = nextFiles.filter((file) => {
+      if (isEditMode && hasDuplicateListingImageFileName(file.name, currentFileNames)) {
+        duplicateFileNameFound = true;
+        return false;
+      }
+
       const fileKey = getFileKey(file);
       if (sourceKeys.has(fileKey)) return false;
       sourceKeys.add(fileKey);
       return true;
     });
 
-    if (!uniqueFiles.length) return;
+    if (!uniqueFiles.length) {
+      if (duplicateFileNameFound) {
+        setImageMessage(LISTING_IMAGE_DUPLICATE_FILENAME_MESSAGE);
+      }
+      return;
+    }
 
     if (totalImageCount + uniqueFiles.length > MAX_LISTING_IMAGES) {
       setImageMessage(`You can upload up to ${MAX_LISTING_IMAGES} images in total.`);
@@ -907,7 +889,30 @@ function PostListingPageContent() {
       const compressedFiles = await compressImagesForUpload(uniqueFiles, ({ current, total }) => {
         setImageCompressionStatus(`Compressing photos ${current}/${total}...`);
       });
-      const validationMessage = getImageValidationMessage(compressedFiles, totalImageCount);
+      const compressedFileNames = new Set<string>();
+      if (isEditMode) {
+        images.forEach((file) => addKnownListingImageFileName(file.name, compressedFileNames));
+        existingImages.forEach((image) => addKnownListingImageFileName(image.file_name, compressedFileNames));
+      }
+      const uniqueCompressedFiles = isEditMode
+        ? compressedFiles.filter((file) => {
+            if (hasDuplicateListingImageFileName(file.name, compressedFileNames)) {
+              duplicateFileNameFound = true;
+              return false;
+            }
+
+            return true;
+          })
+        : compressedFiles;
+
+      if (!uniqueCompressedFiles.length) {
+        if (duplicateFileNameFound) {
+          setImageMessage(LISTING_IMAGE_DUPLICATE_FILENAME_MESSAGE);
+        }
+        return;
+      }
+
+      const validationMessage = getImageValidationMessage(uniqueCompressedFiles, totalImageCount);
       if (validationMessage) {
         setImageMessage(validationMessage);
         return;
@@ -915,15 +920,16 @@ function PostListingPageContent() {
 
       setImages((current) => {
         const currentKeys = new Set(current.map(getFileKey));
-        const uniqueCompressedFiles = compressedFiles.filter((file) => {
+        const nextCompressedFiles = uniqueCompressedFiles.filter((file) => {
           const fileKey = getFileKey(file);
           if (currentKeys.has(fileKey)) return false;
           currentKeys.add(fileKey);
           return true;
         });
 
-        return [...current, ...uniqueCompressedFiles];
+        return [...current, ...nextCompressedFiles];
       });
+      setImageMessage(duplicateFileNameFound ? LISTING_IMAGE_DUPLICATE_FILENAME_MESSAGE : "");
     } catch (error) {
       setImageMessage(error instanceof Error ? error.message : "One or more photos could not be compressed.");
     } finally {
@@ -1157,7 +1163,8 @@ function PostListingPageContent() {
       enqueueSnackbar("Please wait for file updates to finish before saving.", { variant: "warning" });
       return;
     }
-    const nextImageMessage = imageMessage || currentImageValidationMessage;
+    const blockingImageMessage = imageMessage === LISTING_IMAGE_DUPLICATE_FILENAME_MESSAGE ? "" : imageMessage;
+    const nextImageMessage = blockingImageMessage || currentImageValidationMessage;
     if (nextImageMessage) {
       setTouched((current) => ({ ...current, images: true }));
       setImageMessage(nextImageMessage);

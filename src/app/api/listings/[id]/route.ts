@@ -24,9 +24,23 @@ import {
   type UploadedListingDocumentMetadata,
 } from "@/lib/document-upload";
 import { getHandoverDateValidationMessage } from "@/lib/handover-date";
-import { getImageUploadValidationError } from "@/lib/image-upload";
+import {
+  LISTING_IMAGE_DUPLICATE_FILENAME_MESSAGE,
+  getListingImageNormalizedFileNameCandidates,
+  getImageUploadValidationError,
+  normalizeListingImageFileName,
+} from "@/lib/image-upload";
 import { saveUploadedListingDocuments } from "@/lib/listing-documents-server";
 import { normalizeListingMediaUrl } from "@/lib/listing-media";
+import {
+  getListingPercentageValidationError,
+  parseOptionalNumericInput,
+} from "@/lib/numeric-field-validation";
+import {
+  getListingQualityLabel,
+  getListingQualitySourceFromListing,
+  getListingQualityState,
+} from "@/lib/listing-quality";
 
 const MIN_LISTING_IMAGES = 1;
 const MAX_LISTING_IMAGES = 10;
@@ -195,6 +209,39 @@ async function fetchListingEngagementMetrics(
   };
 }
 
+async function fetchListingDocumentCount(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  listingId: string,
+) {
+  const { count, error } = await supabase
+    .from("listing_documents")
+    .select("id", { count: "exact", head: true })
+    .eq("listing_id", listingId);
+
+  if (error) {
+    throw new Error(error.message || "Failed to load listing document count.");
+  }
+
+  return count || 0;
+}
+
+async function fetchListingScoreCommissionTerms(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  listingId: string,
+) {
+  const { data, error } = await supabase
+    .from("commission_terms")
+    .select("listing_id, co_broke_percent, payment_terms, notes")
+    .eq("listing_id", listingId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || "Failed to load listing score terms.");
+  }
+
+  return (data as Listing["commission_terms"]) || null;
+}
+
 function assertOwnerOrAdmin(listing: Pick<Listing, "created_by">, user: Pick<PlatformUser, "id" | "role">) {
   return user.role === "admin" || listing.created_by === user.id;
 }
@@ -216,6 +263,24 @@ function getListingImageValidationError(files: File[], existingImageCount = 0) {
   }
 
   return "";
+}
+
+function addKnownListingImageFileName(fileName: string | null | undefined, knownFileNames: Set<string>) {
+  const normalizedFileName = normalizeListingImageFileName(fileName || "");
+  if (normalizedFileName) {
+    knownFileNames.add(normalizedFileName);
+  }
+}
+
+function hasDuplicateListingImageFileName(fileName: string, knownFileNames: Set<string>) {
+  const fileNameCandidates = getListingImageNormalizedFileNameCandidates(fileName);
+  const hasDuplicate = fileNameCandidates.some((candidate) => knownFileNames.has(candidate));
+
+  if (!hasDuplicate) {
+    fileNameCandidates.forEach((candidate) => knownFileNames.add(candidate));
+  }
+
+  return hasDuplicate;
 }
 
 async function uploadListingImages(
@@ -438,7 +503,7 @@ function buildListingPayload(source: Record<string, FormDataEntryValue | string 
     price: Number(source.price || 0),
     payment_plan: String(source.paymentPlan || source.payment_plan || "").trim() || null,
     handover_date: String(source.handoverDate || source.handover_date || "").trim() || null,
-    yield_percent: parseNumber(String(source.yieldPercent || source.yield_percent || "")),
+    yield_percent: parseOptionalNumericInput(source.yieldPercent ?? source.yield_percent ?? ""),
     property_video_url: normalizeListingMediaUrl(String(source.propertyVideoUrl || source.property_video_url || "")),
     notes: String(source.notes || "").trim() || null,
     description: String(source.description || "").trim() || null,
@@ -759,6 +824,39 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
   const viewerCanChat = !!viewer && viewer.role === "broker" && isActiveBrokerStatus(viewer.status) && viewer.id !== listing.created_by;
 
+  let scoreDocumentCount = documents.length;
+  let scoreCommissionTerms = listing.commission_terms || null;
+  try {
+    const [documentCount, commissionTerms] = await Promise.all([
+      canViewDocuments
+        ? Promise.resolve(documents.length)
+        : measure(timings, "document_count", () => fetchListingDocumentCount(supabase, params.id)),
+      scoreCommissionTerms
+        ? Promise.resolve(scoreCommissionTerms)
+        : measure(timings, "score_terms", () => fetchListingScoreCommissionTerms(supabase, params.id)),
+    ]);
+
+    scoreDocumentCount = documentCount;
+    scoreCommissionTerms = commissionTerms;
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Failed to calculate listing score.", 500);
+  }
+
+  const listingQuality = getListingQualityState(
+    getListingQualitySourceFromListing(
+      {
+        ...listing,
+        commission_terms: scoreCommissionTerms,
+      },
+      {
+        documentCount: scoreDocumentCount,
+        imageCount: listing.listing_images?.length ?? 0,
+        maxImageCount: MAX_LISTING_IMAGES,
+        minImageCount: MIN_LISTING_IMAGES,
+      },
+    ),
+  );
+
   const responseBuildStartedAt = performance.now();
   const response = NextResponse.json({
     listing: {
@@ -767,6 +865,8 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
       can_chat: viewerCanChat,
       enquiry_count: engagementMetrics.enquiryCount,
       brokers_engaged_count: engagementMetrics.brokersEngagedCount,
+      listing_score: listingQuality.percentage,
+      listing_score_label: getListingQualityLabel(listingQuality.percentage),
       commission_terms: canSeeInternal ? listing.commission_terms : null,
       listing_documents: canViewDocuments ? documents : [],
       public_broker: publicBroker,
@@ -887,9 +987,13 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   let imageOrder: string[] = [];
   let removeImageIds: string[] = [];
   let commissionTerms: { coBrokePercent?: string; paymentTerms?: string; notes?: string } | null = null;
+  let yieldPercentInput = "";
+  let coBrokePercentInput = "";
 
   if (contentType.includes("multipart/form-data")) {
     const formData = await request.formData();
+    yieldPercentInput = String(formData.get("yieldPercent") || "");
+    coBrokePercentInput = String(formData.get("coBrokePercent") || "");
     payload = buildListingPayload({
       title: formData.get("title"),
       propertyType: formData.get("propertyType"),
@@ -923,6 +1027,14 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     };
   } else {
     const body = await request.json();
+    yieldPercentInput = String(body.yieldPercent ?? body.yield_percent ?? "");
+    coBrokePercentInput = String(
+      body.commissionTerms?.coBrokePercent ??
+        body.commissionTerms?.co_broke_percent ??
+        body.coBrokePercent ??
+        body.co_broke_percent ??
+        ""
+    );
     payload = buildListingPayload(body);
     try {
       documents = parseListingDocumentMetadataPayload(body.documents ?? body.documentMetadata);
@@ -943,9 +1055,25 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     return jsonError(handoverDateError, 400);
   }
 
+  const yieldPercentValidationError = getListingPercentageValidationError(yieldPercentInput, {
+    invalidMessage: "Yield Percent must be numeric.",
+    maxMessage: "Yield Percent cannot exceed 100.",
+  });
+  if (yieldPercentValidationError) {
+    return jsonError(yieldPercentValidationError, 400);
+  }
+
+  const coBrokePercentValidationError = getListingPercentageValidationError(coBrokePercentInput, {
+    invalidMessage: "Co-broke Percent must be numeric.",
+    maxMessage: "Co-broke Percent cannot exceed 100.",
+  });
+  if (coBrokePercentValidationError) {
+    return jsonError(coBrokePercentValidationError, 400);
+  }
+
   const existingImagesResult = await supabase
     .from("listing_images")
-    .select("id")
+    .select("id, file_name")
     .eq("listing_id", params.id)
     .order("sort_order", { ascending: true });
 
@@ -983,6 +1111,21 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   const imageValidationError = getListingImageValidationError(imageFiles, existingImageIds.length - normalizedRemoveImageIds.length);
   if (imageValidationError) {
     return jsonError(imageValidationError, 400);
+  }
+
+  if (imageFiles.length) {
+    const knownImageFileNames = new Set<string>();
+    (existingImagesResult.data || []).forEach((image) => {
+      if (!normalizedRemoveImageIds.includes(image.id)) {
+        addKnownListingImageFileName(image.file_name, knownImageFileNames);
+      }
+    });
+
+    for (const image of imageFiles) {
+      if (hasDuplicateListingImageFileName(image.name, knownImageFileNames)) {
+        return jsonError(LISTING_IMAGE_DUPLICATE_FILENAME_MESSAGE, 409);
+      }
+    }
   }
 
   for (const document of documents) {
@@ -1034,7 +1177,7 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
   if (commissionTerms && (commissionTerms.coBrokePercent || commissionTerms.paymentTerms || commissionTerms.notes)) {
     await supabase.from("commission_terms").upsert({
       listing_id: params.id,
-      co_broke_percent: Number(commissionTerms.coBrokePercent || 0),
+      co_broke_percent: parseOptionalNumericInput(commissionTerms.coBrokePercent) || 0,
       payment_terms: commissionTerms.paymentTerms || null,
       notes: commissionTerms.notes || null,
     });

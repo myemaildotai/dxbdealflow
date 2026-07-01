@@ -10,6 +10,8 @@ export const IMAGE_UPLOAD_ACCEPT = [
 export const IMAGE_UPLOAD_ALLOWED_FORMATS_LABEL = "JPG, JPEG, PNG, or HEIC";
 export const IMAGE_UPLOAD_MAX_COMPRESSED_SIZE = 1.5 * 1024 * 1024;
 export const IMAGE_UPLOAD_MAX_COMPRESSED_SIZE_LABEL = "1.5MB";
+export const LISTING_IMAGE_DUPLICATE_FILENAME_MESSAGE =
+  "An image with this filename is already attached or selected.";
 
 const IMAGE_UPLOAD_MAX_DIMENSION = 1920;
 const IMAGE_UPLOAD_MIN_DIMENSION = 720;
@@ -45,6 +47,19 @@ const MIME_TYPES_BY_EXTENSION: Record<(typeof IMAGE_UPLOAD_ALLOWED_EXTENSIONS)[n
 function getImageFileExtension(fileName: string) {
   const lastDotIndex = fileName.lastIndexOf(".");
   return lastDotIndex >= 0 ? fileName.slice(lastDotIndex).toLowerCase() : "";
+}
+
+export function normalizeListingImageFileName(fileName: string) {
+  return fileName.trim().normalize("NFKC").toLowerCase();
+}
+
+export function getListingImageNormalizedFileNameCandidates(fileName: string) {
+  return Array.from(
+    new Set([
+      normalizeListingImageFileName(fileName),
+      normalizeListingImageFileName(getCompressedImageFileName(fileName)),
+    ])
+  ).filter(Boolean);
 }
 
 function getValidationLabel(file: ImageUploadFileLike, label?: string) {

@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import MaintenanceNotifyForm from "./MaintenanceNotifyForm";
 
 const maintenanceItems = [
   {
@@ -164,37 +165,7 @@ export default function MaintenancePage() {
               </div>
             </div>
 
-            <form className="grid gap-4">
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <input
-                  type="text"
-                  name="fullName"
-                  placeholder="Full Name"
-                  className="h-12 w-full rounded-xl border border-[#E3E0D8] bg-white px-4 text-sm text-[#0F172A] outline-none transition duration-200 placeholder:text-slate-400 focus:border-[#D4A017] focus:ring-4 focus:ring-[#D4A017]/10"
-                />
-
-                <input
-                  type="email"
-                  name="email"
-                  placeholder="Email Address"
-                  className="h-12 w-full rounded-xl border border-[#E3E0D8] bg-white px-4 text-sm text-[#0F172A] outline-none transition duration-200 placeholder:text-slate-400 focus:border-[#D4A017] focus:ring-4 focus:ring-[#D4A017]/10"
-                />
-
-                <button
-                  type="button"
-                  className="inline-flex h-12 shrink-0 items-center justify-center rounded-xl bg-[linear-gradient(135deg,#F0C24A_0%,#D49F17_100%)] px-7 text-base font-semibold text-[#0F172A] shadow-[0_14px_28px_rgba(212,175,55,0.22)] transition duration-300 hover:scale-[1.01] hover:shadow-[0_18px_34px_rgba(212,175,55,0.28)]"
-                >
-                  Notify Me
-                </button>
-              </div>
-
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center justify-center gap-2 text-sm text-slate-500 lg:justify-start">
-                  <PrivacyLockIcon className="h-6 w-6 shrink-0" />
-                  <span>We respect your privacy. Your details are safe with us.</span>
-                </div>
-              </div>
-            </form>
+            <MaintenanceNotifyForm />
           </div>
         </section>
 
@@ -402,28 +373,6 @@ function MailIcon({ className = "h-6 w-6" }: { className?: string }) {
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function PrivacyLockIcon({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
-      <rect
-        x="4"
-        y="8"
-        width="12"
-        height="8"
-        rx="1.8"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-      <path
-        d="M6.5 8V6.7C6.5 4.93 7.93 3.5 9.7 3.5H10.3C12.07 3.5 13.5 4.93 13.5 6.7V8"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
       />
     </svg>
   );

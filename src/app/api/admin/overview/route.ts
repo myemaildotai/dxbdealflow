@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { NON_CHAT_ACTIVITY_OR_FILTER } from "@/lib/activity-categories";
 import { getServiceSupabase, requireAdmin, withNoStore } from "@/lib/deal-server";
 import { fetchAreas } from "@/lib/platform-server-data";
 import type { AdminOverview } from "@/lib/deal-types";
 
-function countValue(result: { count: number | null }) {
-  return result.count || 0;
-}
 
 export async function GET(request: NextRequest) {
   const auth = await requireAdmin(request);
@@ -15,114 +11,44 @@ export async function GET(request: NextRequest) {
   const supabase = getServiceSupabase();
   const weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const [
-    areas,
-    totalUsersResult,
-    totalBrokersResult,
-    pendingApplicationsResult,
-    activeBrokersResult,
-    pendingBrokerUsersThisWeekResult,
-    approvedBrokerUsersThisWeekResult,
-    totalListingsResult,
-    activeListingsResult,
-    pendingListingsResult,
-    pendingListingsThisWeekResult,
-    approvedListingsThisWeekResult,
-    totalRequirementsResult,
-    activeRequirementsResult,
-    activeRequirementsThisWeekResult,
-    publicEnquiriesResult,
-    comingSoonRegistrationsResult,
-    totalChatsResult,
-    activityCountResult,
-  ] = await Promise.all([
+  const [areas, metricsRes] = await Promise.all([
     fetchAreas(supabase),
-    supabase.from("users").select("id", { count: "exact", head: true }),
-    supabase.from("users").select("id", { count: "exact", head: true }).eq("role", "broker"),
-    supabase.from("users").select("id", { count: "exact", head: true }).eq("role", "broker").eq("status", "pending"),
-    supabase.from("users").select("id", { count: "exact", head: true }).eq("role", "broker").in("status", ["active", "approved"]),
-    supabase
-      .from("users")
-      .select("id", { count: "exact", head: true })
-      .eq("role", "broker")
-      .eq("status", "pending")
-      .gte("created_at", weekStart),
-    supabase
-      .from("users")
-      .select("id", { count: "exact", head: true })
-      .eq("role", "broker")
-      .in("status", ["active", "approved"])
-      .gte("updated_at", weekStart),
-    supabase.from("listings").select("id", { count: "exact", head: true }),
-    supabase
-      .from("listings")
-      .select("id", { count: "exact", head: true })
-      .is("deleted_at", null)
-      .in("status", ["active", "approved"]),
-    supabase
-      .from("listings")
-      .select("id", { count: "exact", head: true })
-      .is("deleted_at", null)
-      .eq("status", "pending"),
-    supabase
-      .from("listings")
-      .select("id", { count: "exact", head: true })
-      .is("deleted_at", null)
-      .eq("status", "pending")
-      .gte("created_at", weekStart),
-    supabase
-      .from("listings")
-      .select("id", { count: "exact", head: true })
-      .is("deleted_at", null)
-      .in("status", ["active", "approved"])
-      .or(`approved_at.gte.${weekStart},updated_at.gte.${weekStart}`),
-    supabase.from("requirements").select("id", { count: "exact", head: true }),
-    supabase
-      .from("requirements")
-      .select("id", { count: "exact", head: true })
-      .is("deleted_at", null)
-      .eq("is_active", true),
-    supabase
-      .from("requirements")
-      .select("id", { count: "exact", head: true })
-      .is("deleted_at", null)
-      .eq("is_active", true)
-      .gte("created_at", weekStart),
-    supabase.from("leads").select("id", { count: "exact", head: true }),
-    supabase.from("coming_soon_registrations").select("id", { count: "exact", head: true }),
-    supabase.from("chat_conversations").select("id", { count: "exact", head: true }),
-    supabase
-      .from("activity_log")
-      .select("id", { count: "exact", head: true })
-      .or(NON_CHAT_ACTIVITY_OR_FILTER),
+    supabase.rpc("get_admin_dashboard_metrics", { p_week_start: weekStart }),
   ]);
 
-  const totalChats = countValue(totalChatsResult);
-  const publicEnquiries = countValue(publicEnquiriesResult);
-  const leads = countValue(comingSoonRegistrationsResult);
-  const activity = countValue(activityCountResult);
+  const { data: metricsRows, error: metricsError } = metricsRes;
+  if (metricsError || !metricsRows || metricsRows.length === 0) {
+    return NextResponse.json({ error: metricsError?.message || "Failed to load admin metrics." }, { status: 500 });
+  }
+
+  const row = metricsRows[0];
+
+  const totalChats = row.total_chats || 0;
+  const publicEnquiries = row.public_enquiries || 0;
+  const leads = row.coming_soon_registrations || 0;
+  const activity = row.activity_count || 0;
 
   const payload: AdminOverview = {
     metrics: {
-      pendingApplications: countValue(pendingApplicationsResult),
-      activeBrokers: countValue(activeBrokersResult),
-      totalUsers: countValue(totalUsersResult),
-      activeListings: countValue(activeListingsResult),
-      pendingListings: countValue(pendingListingsResult),
-      activeRequirements: countValue(activeRequirementsResult),
+      pendingApplications: row.pending_applications || 0,
+      activeBrokers: row.active_brokers || 0,
+      totalUsers: row.total_users || 0,
+      activeListings: row.active_listings || 0,
+      pendingListings: row.pending_listings || 0,
+      activeRequirements: row.active_requirements || 0,
       publicEnquiries,
       totalChats,
-      pendingBrokerUsersThisWeek: countValue(pendingBrokerUsersThisWeekResult),
-      approvedBrokerUsersThisWeek: countValue(approvedBrokerUsersThisWeekResult),
-      pendingListingsThisWeek: countValue(pendingListingsThisWeekResult),
-      approvedListingsThisWeek: countValue(approvedListingsThisWeekResult),
-      activeRequirementsThisWeek: countValue(activeRequirementsThisWeekResult),
+      pendingBrokerUsersThisWeek: row.pending_broker_users_this_week || 0,
+      approvedBrokerUsersThisWeek: row.approved_broker_users_this_week || 0,
+      pendingListingsThisWeek: row.pending_listings_this_week || 0,
+      approvedListingsThisWeek: row.approved_listings_this_week || 0,
+      activeRequirementsThisWeek: row.active_requirements_this_week || 0,
     },
     tabCounts: {
-      brokers: countValue(totalBrokersResult),
-      listings: countValue(totalListingsResult),
+      brokers: row.total_brokers || 0,
+      listings: row.total_listings || 0,
       chats: totalChats,
-      requirements: countValue(totalRequirementsResult),
+      requirements: row.total_requirements || 0,
       enquiries: publicEnquiries,
       leads,
       activity,

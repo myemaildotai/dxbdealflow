@@ -252,7 +252,10 @@ export function ListingCard({
   );
 
   return (
-    <article className="group flex h-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[#e6ebf2] bg-white shadow-[0_14px_34px_rgba(15,42,95,0.07)] transition duration-300 hover:-translate-y-1 hover:shadow-[0_22px_46px_rgba(15,42,95,0.11)] md:rounded-[20px]">
+    <article
+      style={{ contentVisibility: "auto", containIntrinsicSize: "240px" } as React.CSSProperties}
+      className="group flex h-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[#e6ebf2] bg-white shadow-[0_14px_34px_rgba(15,42,95,0.07)] transition duration-300 hover:-translate-y-1 hover:shadow-[0_22px_46px_rgba(15,42,95,0.11)] md:rounded-[20px]"
+    >
       <div className="relative h-[172px] overflow-hidden rounded-t-[16px] bg-[#e7edf5] sm:h-[196px] md:h-[208px] md:rounded-t-[20px]">
         {coverImage ? (
           <Image

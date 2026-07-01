@@ -10,6 +10,7 @@ import {
 } from "@/lib/deal-server";
 import { isActiveBrokerStatus } from "@/lib/deal-utils";
 import { triggerRequirementMatchFoundForSubmittedMatch } from "@/lib/email-notifications";
+import { runEmailWorkflowInBackground } from "@/lib/email-service";
 import { isListingMatchingRequirement } from "@/lib/requirement-matching";
 import { hydrateRequirementMatches } from "@/lib/requirements-server";
 import type { Listing, Requirement, RequirementMatch } from "@/lib/deal-types";
@@ -225,11 +226,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     });
 
     // Email trigger: requirement owner receives the matched listing summary.
-    await triggerRequirementMatchFoundForSubmittedMatch({
+    const emailWorkflow = triggerRequirementMatchFoundForSubmittedMatch({
       requirementId: params.id,
       listingId,
       requirementMatchId: createdMatchId,
     });
+    runEmailWorkflowInBackground(emailWorkflow, "requirement-match-submitted-email");
 
     return NextResponse.json(
       {

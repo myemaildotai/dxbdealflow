@@ -19,6 +19,7 @@ export const EMAIL_TYPES = {
   brokerEmailVerificationOtp: "broker_email_verification_otp",
   brokerPublicEnquiryNotification: "broker_public_enquiry_notification",
   enquiryReplyEmail: "enquiry_reply_email",
+  maintenanceAvailability: "maintenance_availability",
 } as const;
 
 export type EmailType = (typeof EMAIL_TYPES)[keyof typeof EMAIL_TYPES];
@@ -36,6 +37,7 @@ type SendLoggedEmailInput = {
   replyTo?: string | string[] | null;
   background?: boolean;
   supabase?: SupabaseClient;
+  enqueue?: boolean;
 };
 
 export type LoggedEmailResult = {
@@ -47,13 +49,15 @@ export type LoggedEmailResult = {
   error?: string | null;
 };
 
-type EmailEventRow = {
+export type EmailEventRow = {
   id: string;
+  status: EmailLogStatus;
 };
 
 type EmailLogRow = {
   id: string;
 };
+
 
 function getNodeWaitUntil() {
   try {
@@ -142,9 +146,28 @@ export function buildAppUrl(path: string) {
   return buildUrlFromBase(getAppBaseUrl(), path);
 }
 
-function isDuplicateEventError(error: { code?: string; message?: string; details?: string } | null | undefined) {
-  const combined = `${error?.message || ""} ${error?.details || ""}`.toLowerCase();
-  return error?.code === "23505" || combined.includes("duplicate") || combined.includes("unique");
+
+function resolveEmailEventKey(input: SendLoggedEmailInput) {
+  const explicitKey = input.eventKey?.trim();
+
+  if (explicitKey) {
+    return explicitKey;
+  }
+
+  const relatedEntityType = input.relatedEntityType?.trim();
+  const relatedEntityId = input.relatedEntityId?.trim();
+
+  if (!relatedEntityType || !relatedEntityId) {
+    return null;
+  }
+
+  return [
+    "auto",
+    input.emailType,
+    normalizeRecipientEmail(input.recipientEmail),
+    relatedEntityType,
+    relatedEntityId,
+  ].join(":");
 }
 
 async function insertEmailLog(
@@ -184,43 +207,52 @@ async function insertEmailLog(
   return data as EmailLogRow;
 }
 
-async function reserveEmailEvent(supabase: SupabaseClient, input: SendLoggedEmailInput): Promise<EmailEventRow | "duplicate" | null> {
-  if (!input.eventKey) {
-    return null;
+
+export async function releaseEmailEventReservation(
+  supabase: SupabaseClient,
+  event: EmailEventRow | null | undefined,
+  context: string,
+) {
+  if (!event) {
+    return true;
   }
 
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from("email_events")
-    .insert({
-      event_key: input.eventKey,
-      email_type: input.emailType,
-      recipient_email: normalizeRecipientEmail(input.recipientEmail),
-      recipient_user_id: input.recipientUserId || null,
-      related_entity_type: input.relatedEntityType || null,
-      related_entity_id: input.relatedEntityId || null,
-      status: "pending",
-      metadata: input.metadata || {},
-    })
-    .select("id")
-    .single();
+    .delete()
+    .eq("id", event.id)
+    .neq("status", "sent");
 
   if (error) {
-    if (isDuplicateEventError(error)) {
-      return "duplicate";
-    }
-
-    console.error("[email] Failed to reserve email event.", {
-      eventKey: input.eventKey,
-      emailType: input.emailType,
+    console.error("[email] Failed to release email event reservation.", {
+      eventId: event.id,
+      status: event.status,
+      context,
       error: error.message,
     });
-    return null;
+    const { error: markRetryableError } = await supabase
+      .from("email_events")
+      .update({ status: "failed" })
+      .eq("id", event.id)
+      .neq("status", "sent");
+
+    if (markRetryableError) {
+      console.error("[email] Failed to mark email event reservation retryable.", {
+        eventId: event.id,
+        status: event.status,
+        context,
+        error: markRetryableError.message,
+      });
+    }
+
+    return false;
   }
 
-  return data as EmailEventRow;
+  return true;
 }
 
-async function updateEmailEvent(
+
+export async function updateEmailEvent(
   supabase: SupabaseClient,
   eventId: string | null | undefined,
   status: EmailLogStatus,
@@ -249,7 +281,7 @@ async function updateEmailEvent(
   }
 }
 
-async function updateEmailLogAfterSend(
+export async function updateEmailLogAfterSend(
   supabase: SupabaseClient,
   logId: string,
   status: EmailLogStatus,
@@ -307,7 +339,12 @@ async function deliverLoggedEmail(
       failureReason: result.ok ? null : result.error || "Email was not sent.",
       metadata,
     });
-    await updateEmailEvent(supabase, event?.id, status, log.id, metadata);
+
+    if (result.ok) {
+      await updateEmailEvent(supabase, event?.id, "sent", log.id, metadata);
+    } else {
+      await releaseEmailEventReservation(supabase, event, `delivery ${status}`);
+    }
 
     return {
       ok: result.ok,
@@ -329,7 +366,7 @@ async function deliverLoggedEmail(
       failureReason: message,
       metadata,
     });
-    await updateEmailEvent(supabase, event?.id, "failed", log.id, metadata);
+    await releaseEmailEventReservation(supabase, event, "delivery exception");
 
     return {
       ok: false,
@@ -353,49 +390,85 @@ export async function sendLoggedEmail(input: SendLoggedEmailInput): Promise<Logg
 
   const supabase = input.supabase || getServiceSupabase();
   const recipientEmail = normalizeRecipientEmail(input.recipientEmail);
-  const normalizedInput = { ...input, recipientEmail };
-
-  const event = await reserveEmailEvent(supabase, normalizedInput);
-  if (event === "duplicate") {
-    const reason = "Duplicate email event already exists.";
-    const skippedLog = await insertEmailLog(supabase, normalizedInput, "skipped", reason);
-    return {
-      ok: false,
-      status: "skipped",
-      logId: skippedLog?.id || null,
-      skipped: true,
-      error: reason,
-    };
-  }
+  const normalizedInput = {
+    ...input,
+    recipientEmail,
+    eventKey: resolveEmailEventKey({ ...input, recipientEmail }),
+  };
 
   if (!isValidEmailAddress(recipientEmail)) {
     const reason = "Recipient email is invalid.";
     const skippedLog = await insertEmailLog(supabase, normalizedInput, "skipped", reason);
-    await updateEmailEvent(supabase, event?.id, "skipped", skippedLog?.id || null, normalizedInput.metadata);
     return {
       ok: false,
       status: "skipped",
       logId: skippedLog?.id || null,
-      eventId: event?.id || null,
       skipped: true,
       error: reason,
     };
   }
 
-  const log = await insertEmailLog(supabase, normalizedInput, "pending");
-  if (!log) {
-    await updateEmailEvent(supabase, event?.id, "failed", null, normalizedInput.metadata);
+  const replyToValue = Array.isArray(normalizedInput.replyTo)
+    ? normalizedInput.replyTo.join(", ")
+    : normalizedInput.replyTo || null;
+
+  const { data: rpcResult, error: rpcError } = await supabase.rpc("enqueue_logged_email", {
+    p_email_type: normalizedInput.emailType,
+    p_recipient_email: recipientEmail,
+    p_recipient_user_id: normalizedInput.recipientUserId || null,
+    p_related_entity_type: normalizedInput.relatedEntityType || null,
+    p_related_entity_id: normalizedInput.relatedEntityId || null,
+    p_template_subject: normalizedInput.template.subject,
+    p_template_html: normalizedInput.template.html || null,
+    p_template_text: normalizedInput.template.text || null,
+    p_reply_to: replyToValue,
+    p_metadata: normalizedInput.metadata || {},
+    p_event_key: normalizedInput.eventKey || null,
+    p_enqueue: normalizedInput.enqueue || false,
+  });
+
+  if (rpcError || !rpcResult) {
+    console.error("[email] Failed to call enqueue_logged_email RPC:", rpcError?.message);
     return {
       ok: false,
       status: "failed",
-      eventId: event?.id || null,
-      error: "Email log could not be created.",
+      error: rpcError?.message || "Failed to execute email RPC.",
     };
   }
 
-  await updateEmailEvent(supabase, event?.id, "pending", log.id, normalizedInput.metadata);
+  const result = rpcResult as {
+    ok: boolean;
+    status: EmailLogStatus;
+    log_id?: string | null;
+    event_id?: string | null;
+    skipped?: boolean;
+    error?: string | null;
+  };
 
-  const delivery = deliverLoggedEmail(supabase, normalizedInput, log, event || null);
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status,
+      logId: result.log_id,
+      eventId: result.event_id,
+      skipped: result.skipped,
+      error: result.error,
+    };
+  }
+
+  if (normalizedInput.enqueue) {
+    return {
+      ok: true,
+      status: "pending",
+      logId: result.log_id,
+      eventId: result.event_id,
+    };
+  }
+
+  const log = { id: result.log_id! };
+  const event = result.event_id ? { id: result.event_id!, status: "pending" as EmailLogStatus } : null;
+
+  const delivery = deliverLoggedEmail(supabase, normalizedInput, log, event);
   const waitUntil = normalizedInput.background === false ? null : getNodeWaitUntil();
 
   if (waitUntil) {

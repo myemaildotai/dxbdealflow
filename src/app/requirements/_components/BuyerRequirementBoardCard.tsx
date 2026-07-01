@@ -238,7 +238,10 @@ export function BuyerRequirementBoardCard({
   ];
 
   return (
-    <article className="w-full min-w-0 rounded-[14px] border border-[#dbe4ef] bg-white px-3 py-3 text-brand-ink shadow-[0_24px_54px_rgba(15,42,95,0.08)] sm:px-4 sm:py-4 lg:px-6 lg:py-5 xl:rounded-[18px]">
+    <article
+      style={{ contentVisibility: "auto", containIntrinsicSize: "240px" } as React.CSSProperties}
+      className="w-full min-w-0 rounded-[14px] border border-[#dbe4ef] bg-white px-3 py-3 text-brand-ink shadow-[0_24px_54px_rgba(15,42,95,0.08)] sm:px-4 sm:py-4 lg:px-6 lg:py-5 xl:rounded-[18px]"
+    >
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-start lg:justify-between xl:gap-5">
         <div className="flex min-w-0 flex-1 gap-3 xl:gap-4">
           {/* <BrokerAvatar

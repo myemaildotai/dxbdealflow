@@ -3,6 +3,7 @@ import { getServiceSupabase, jsonError, requireApprovedBroker } from "@/lib/deal
 import { fetchChatUserSummaries } from "@/lib/platform-server-data";
 import { isActiveListingStatus } from "@/lib/deal-utils";
 import { triggerNewMessageEmail } from "@/lib/email-notifications";
+import { runEmailWorkflowInBackground } from "@/lib/email-service";
 import type { ChatMessage, ChatUserSummary, Listing } from "@/lib/deal-types";
 
 const DEFAULT_MESSAGE_LIMIT = 20;
@@ -303,7 +304,7 @@ export async function POST(request: NextRequest, { params }: { params: { listing
   }
 
   // Email trigger: notify only the receiving broker, with conversation-level throttling.
-  await triggerNewMessageEmail({
+  const emailWorkflow = triggerNewMessageEmail({
     conversationId: sentMessage.conversation_id,
     messageId: sentMessage.message_id,
     senderId: auth.user.id,
@@ -311,6 +312,7 @@ export async function POST(request: NextRequest, { params }: { params: { listing
     listingId: params.listingId,
     listingTitle: context.listing.title,
   });
+  runEmailWorkflowInBackground(emailWorkflow, "chat-new-message-email");
 
   return NextResponse.json({
     success: true,

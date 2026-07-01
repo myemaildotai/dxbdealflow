@@ -25,6 +25,16 @@ import {
   type EnquiryFieldErrors,
 } from "@/lib/enquiry-validation";
 import { getSafeListingsReturnHref, LISTINGS_RETURN_TO_PARAM } from "@/lib/listing-navigation";
+import {
+  LISTING_QUALITY_CHECKLIST_LIMIT,
+  LISTING_QUALITY_RECOMMENDED_IMAGE_COUNT,
+  getListingQualityLabel,
+  getListingQualitySourceFromListing,
+  getListingQualityState,
+  selectListingQualityChecklistItems,
+  type ListingQualityFieldKey,
+  type ListingQualityItem,
+} from "@/lib/listing-quality";
 import { normalizePhoneNumber } from "@/lib/phone";
 import { canAccessBrokerWorkspace, isAdmin } from "@/lib/route-access";
 import { useSessionQuery } from "@/hooks/useSessionQuery";
@@ -82,42 +92,6 @@ async function copyTextToClipboard(text: string) {
   }
 }
 
-function getListingScoreData(listing: Listing, imageCount: number) {
-  const checklist = [
-    hasText(listing.title),
-    Boolean(listing.property_type),
-    Boolean(listing.area_id || listing.area?.name),
-    Boolean(listing.deal_type),
-    typeof listing.price === "number" && listing.price > 0,
-    typeof listing.size_sqft === "number" && listing.size_sqft > 0,
-    typeof listing.bedrooms === "number" && listing.bedrooms >= 0,
-    hasText(listing.developer),
-    hasText(listing.description),
-    imageCount > 0,
-    hasText(listing.payment_plan),
-    Boolean(listing.handover_date),
-    typeof listing.yield_percent === "number" && Number.isFinite(listing.yield_percent),
-    hasText(listing.notes),
-  ];
-
-  const completedCount = checklist.filter(Boolean).length;
-  const score = Math.round((completedCount / Math.max(checklist.length, 1)) * 100);
-
-  if (score >= 100) {
-    return { score, label: "Excellent" };
-  }
-
-  if (score >= 80) {
-    return { score, label: "Good" };
-  }
-
-  if (score >= 50) {
-    return { score, label: "Average" };
-  }
-
-  return { score, label: "Needs work" };
-}
-
 function getScoreTone(score: number) {
   if (score >= 80) {
     return {
@@ -145,6 +119,86 @@ function getDisplayMetric(value: number | string | null | undefined) {
   }
 
   return value;
+}
+
+const LISTING_DETAIL_CHECKLIST_LABELS: Partial<Record<ListingQualityFieldKey, string>> = {
+  areaId: "Area",
+  coBrokePercent: "Co-broke",
+  dealType: "Deal type",
+  description: "Detailed description",
+  developer: "Developer",
+  documents: "Supporting files",
+  handoverDate: "Handover date",
+  images: "Strong photos",
+  notes: "Broker notes",
+  paymentPlan: "Payment plan",
+  paymentTerms: "Payment terms",
+  price: "Competitive price",
+  propertyType: "Property type",
+  sizeSqft: "Size",
+  title: "Listing title",
+  yieldPercent: "Yield",
+};
+
+function canDisplayListingQualityItem(key: ListingQualityFieldKey, canViewDocuments: boolean) {
+  return key !== "documents" || canViewDocuments;
+}
+
+function getListingQualityChecklistHelper(item: ListingQualityItem, listing: Listing, imageCount: number, priceLabel: string) {
+  switch (item.key) {
+    case "images":
+      if (imageCount <= 0) {
+        return "Add listing images";
+      }
+
+      return imageCount >= LISTING_QUALITY_RECOMMENDED_IMAGE_COUNT
+        ? `${imageCount} image${imageCount === 1 ? "" : "s"} uploaded`
+        : `${imageCount} of ${LISTING_QUALITY_RECOMMENDED_IMAGE_COUNT} recommended images uploaded`;
+    case "description":
+      return hasText(listing.description)
+        ? `${listing.description?.trim().length || 0} characters added`
+        : "Description missing";
+    case "price":
+      return typeof listing.price === "number" && listing.price > 0 ? priceLabel : "Price missing";
+    case "areaId":
+      return listing.area?.name || listing.area_id ? "Area selected" : "Area missing";
+    case "propertyType":
+      return listing.property_type ? formatPropertyType(listing.property_type) : "Property type missing";
+    case "documents": {
+      const documentCount = listing.listing_documents?.length || 0;
+      return documentCount
+        ? `${documentCount} file${documentCount === 1 ? "" : "s"} uploaded`
+        : "Add supporting files";
+    }
+    case "paymentPlan":
+      return hasText(listing.payment_plan) ? "Payment plan added" : "Payment plan missing";
+    case "yieldPercent":
+      return typeof listing.yield_percent === "number" && Number.isFinite(listing.yield_percent)
+        ? `${formatPercentValue(listing.yield_percent)} yield added`
+        : "Yield missing";
+    case "coBrokePercent":
+      return typeof listing.commission_terms?.co_broke_percent === "number" && Number.isFinite(listing.commission_terms.co_broke_percent)
+        ? `${formatPercentValue(listing.commission_terms.co_broke_percent)} co-broke added`
+        : "Co-broke missing";
+    case "paymentTerms":
+      return hasText(listing.commission_terms?.payment_terms) ? "Payment terms added" : "Payment terms missing";
+    case "sizeSqft":
+      return typeof listing.size_sqft === "number" && listing.size_sqft > 0 ? `${listing.size_sqft} sqft added` : "Size missing";
+    case "bedrooms":
+      return typeof listing.bedrooms === "number" && listing.bedrooms >= 0 ? "Bedrooms added" : "Bedrooms missing";
+    case "developer":
+      return hasText(listing.developer) ? `${listing.developer} added` : "Developer missing";
+    case "dealType":
+      return listing.deal_type ? formatDealType(listing.deal_type) : "Deal type missing";
+    case "handoverDate":
+      return listing.handover_date ? `Handover ${formatDate(listing.handover_date)}` : "Handover missing";
+    case "title":
+      return hasText(listing.title) ? "Listing title added" : "Title missing";
+    case "notes":
+      return hasText(listing.notes) ? "Broker notes added" : "Notes missing";
+    default:
+      return item.complete ? `${item.label} added` : `${item.label} missing`;
+  }
 }
 
 function normalizeImageIndex(index: number, imageCount: number) {
@@ -820,10 +874,15 @@ export default function ListingDetailPage() {
     getCachedApiData<BrowseListingsResponse>("/api/listings?page=1&pageSize=1000")?.listings ||
     [];
   const marketIntel = cachedListings.length ? buildListingIntel(listing, cachedListings) : null;
-  const listingScoreData = getListingScoreData(listing, images.length);
-  const listingScore = uiListing.listing_score ?? listingScoreData.score;
+  const fallbackListingQuality = getListingQualityState(
+    getListingQualitySourceFromListing(listing, {
+      documentCount: listing.listing_documents?.length ?? 0,
+      imageCount: images.length,
+    }),
+  );
+  const listingScore = uiListing.listing_score ?? fallbackListingQuality.percentage;
   const scoreTone = getScoreTone(listingScore);
-  const scoreLabel = uiListing.listing_score_label || listingScoreData.label;
+  const scoreLabel = uiListing.listing_score_label || getListingQualityLabel(listingScore);
   const listingStatusLabel = formatListingStatus(listing.status);
   const priceLabel = formatCurrency(listing.price);
   const areaLabel = listing.area?.name || "Area pending";
@@ -848,23 +907,18 @@ export default function ListingDetailPage() {
     (marketIntel?.comparableCount
       ? `${marketIntel.comparableCount} comparable${marketIntel.comparableCount === 1 ? "" : "s"}`
       : areaLabel);
-  const checklistItems = [
+  const canViewQualityDocuments = Boolean(listing.can_edit || adminView);
+  const checklistItems = selectListingQualityChecklistItems(
+    fallbackListingQuality.items.filter((item) => canDisplayListingQualityItem(item.key, canViewQualityDocuments)),
     {
-      label: "Strong photos",
-      complete: images.length > 0,
-      helper: images.length ? `${images.length} image${images.length === 1 ? "" : "s"} uploaded` : "Add listing images",
+      limit: LISTING_QUALITY_CHECKLIST_LIMIT,
+      percentage: listingScore,
     },
-    {
-      label: "Detailed description",
-      complete: hasText(listing.description),
-      helper: hasText(listing.description) ? `${listing.description?.trim().length || 0} characters added` : "Description missing",
-    },
-    {
-      label: "Competitive price",
-      complete: typeof listing.price === "number" && listing.price > 0,
-      helper: typeof listing.price === "number" && listing.price > 0 ? priceLabel : "Price missing",
-    },
-  ];
+  ).map((item) => ({
+    label: LISTING_DETAIL_CHECKLIST_LABELS[item.key] || item.label,
+    complete: item.complete,
+    helper: getListingQualityChecklistHelper(item, listing, images.length, priceLabel),
+  }));
   const publicBroker = listing.public_broker || null;
   const maskedBrokerName = getMaskedBrokerName(publicBroker?.first_name, publicBroker?.last_name);
   const brokerAvatarSrc = publicBroker?.profile_photo || null;
@@ -1057,7 +1111,7 @@ export default function ListingDetailPage() {
                 </span>
               </div>
 
-              <div className="mt-4 grid gap-4 lg:mt-5 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-start lg:gap-5">
+              <div className="mt-4 grid gap-4 lg:mt-5 lg:grid-cols-[minmax(0,1fr)_240px] lg:items-start lg:gap-5">
                 <div className="min-w-0">
                   <h1 className="hidden font-heading text-[1.6rem] font-bold tracking-[-0.04em] text-brand-navy sm:text-[1.9rem] lg:block lg:text-[2.5rem]">
                     {listing.title}
@@ -1068,7 +1122,7 @@ export default function ListingDetailPage() {
                   <p className="mt-3 max-w-4xl text-sm leading-6 text-brand-slate lg:mt-4 lg:text-[1.03rem] lg:leading-8">{description}</p>
                 </div>
 
-                <div className="rounded-[12px] p-3 text-left lg:p-5 lg:text-right">
+                <div className="rounded-[12px] p-3 text-left lg:p-2 lg:text-right">
                   <p className="text-[11px] uppercase tracking-[0.24em] text-brand-slate lg:text-[12px] lg:tracking-[0.32em]">Price</p>
                   <p className="mt-2 break-words font-heading text-xl font-semibold tracking-[-0.04em] text-brand-navy lg:mt-3 lg:text-3xl">
                     {priceLabel}

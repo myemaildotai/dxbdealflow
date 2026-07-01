@@ -72,7 +72,6 @@ const ADMIN_BROKER_REQUIREMENT_SELECT =
   "id, broker_id, posted_by, title, description, property_type, deal_type, bedrooms, budget_min, budget_max, area, area_id, urgency, timeline, notes, is_active, deactivated_by, deleted_at, created_at, updated_at";
 const ENQUIRY_LISTING_SELECT = "id, title, price, property_type, status, deleted_at";
 const BROKER_ACTIVITY_SELECT = "id, action, target_table, target_id, created_at, metadata, actor_user_id";
-const ACTIVITY_TARGET_ID_CHUNK_SIZE = 40;
 const ID_CHUNK_SIZE = 80;
 const BROKER_ACTIVITY_SEARCH_METADATA_KEYS = [
   "listingTitle",
@@ -191,33 +190,7 @@ function buildListingSearchOrFilter(pattern: string | null, areaIds: string[]) {
   return clauses.join(",");
 }
 
-async function fetchBrokerListingCount(
-  supabase: SupabaseClient,
-  userId: string,
-  {
-    endDate,
-    filter,
-    searchOrFilter,
-    startDate,
-  }: {
-    endDate: string | null;
-    filter: ListingFilterId;
-    searchOrFilter: string | null;
-    startDate: string | null;
-  }
-) {
-  let query = applyListingFilter(supabase.from("listings").select("id", { count: "exact", head: true }), userId, filter);
-  if (startDate) query = query.gte("created_at", startDate);
-  if (endDate) query = query.lte("created_at", endDate);
-  if (searchOrFilter) query = query.or(searchOrFilter);
 
-  const { count, error } = await query;
-  if (error) {
-    throw new Error(error.message || "Failed to count broker listings.");
-  }
-
-  return count || 0;
-}
 
 export async function fetchAdminBrokerListings(
   supabase: SupabaseClient,
@@ -238,17 +211,19 @@ export async function fetchAdminBrokerListings(
   if (endDate) rowsQuery = rowsQuery.lte("created_at", endDate);
   if (searchOrFilter) rowsQuery = rowsQuery.or(searchOrFilter);
 
-  const [countResults, rowsResult] = await Promise.all([
-    Promise.all([
-      fetchBrokerListingCount(supabase, userId, { endDate, filter: "all", searchOrFilter, startDate }),
-      fetchBrokerListingCount(supabase, userId, { endDate, filter: "pending", searchOrFilter, startDate }),
-      fetchBrokerListingCount(supabase, userId, { endDate, filter: "approved", searchOrFilter, startDate }),
-      fetchBrokerListingCount(supabase, userId, { endDate, filter: "rejected", searchOrFilter, startDate }),
-      fetchBrokerListingCount(supabase, userId, { endDate, filter: "inactive", searchOrFilter, startDate }),
-      fetchBrokerListingCount(supabase, userId, { endDate, filter: "deleted", searchOrFilter, startDate }),
-    ]),
+  let countQuery = supabase.from("listings").select("status, deleted_at").eq("created_by", userId);
+  if (startDate) countQuery = countQuery.gte("created_at", startDate);
+  if (endDate) countQuery = countQuery.lte("created_at", endDate);
+  if (searchOrFilter) countQuery = countQuery.or(searchOrFilter);
+
+  const [countsResult, rowsResult] = await Promise.all([
+    countQuery,
     rowsQuery.order("created_at", { ascending: false }).range(rangeFrom, rangeTo),
   ]);
+
+  if (countsResult.error) {
+    throw new Error(countsResult.error.message || "Failed to count broker listings.");
+  }
   if (rowsResult.error) {
     throw new Error(rowsResult.error.message || "Failed to load broker listings.");
   }
@@ -267,7 +242,33 @@ export async function fetchAdminBrokerListings(
     ...listing,
     area: listing.area_id ? areaMap.get(listing.area_id) || null : null,
   }));
-  const [all, pending, approved, rejected, inactive, deleted] = countResults;
+
+  let all = 0;
+  let pending = 0;
+  let approved = 0;
+  let rejected = 0;
+  let inactive = 0;
+  let deleted = 0;
+
+  if (countsResult.data) {
+    for (const item of countsResult.data) {
+      if (item.deleted_at !== null) {
+        deleted++;
+      } else {
+        all++;
+        if (item.status === "pending") {
+          pending++;
+        } else if (item.status === "active" || item.status === "approved") {
+          approved++;
+        } else if (item.status === "rejected") {
+          rejected++;
+        } else if (item.status === "inactive") {
+          inactive++;
+        }
+      }
+    }
+  }
+
   const counts = { all, pending, approved, rejected, inactive, deleted };
 
   return {
@@ -329,39 +330,7 @@ function buildRequirementSearchOrFilter(pattern: string | null) {
   ].join(",");
 }
 
-async function fetchBrokerRequirementCount(
-  supabase: SupabaseClient,
-  userId: string,
-  brokerProfileId: string | null,
-  {
-    endDate,
-    filter,
-    searchOrFilter,
-    startDate,
-  }: {
-    endDate: string | null;
-    filter: RequirementFilterId;
-    searchOrFilter: string | null;
-    startDate: string | null;
-  }
-) {
-  let query = applyRequirementFilter(
-    supabase.from("requirements").select("id", { count: "exact", head: true }),
-    userId,
-    brokerProfileId,
-    filter
-  );
-  if (startDate) query = query.gte("created_at", startDate);
-  if (endDate) query = query.lte("created_at", endDate);
-  if (searchOrFilter) query = query.or(searchOrFilter);
 
-  const { count, error } = await query;
-  if (error) {
-    throw new Error(error.message || "Failed to count broker requirements.");
-  }
-
-  return count || 0;
-}
 
 export async function fetchAdminBrokerRequirements(
   supabase: SupabaseClient,
@@ -387,15 +356,23 @@ export async function fetchAdminBrokerRequirements(
   if (endDate) rowsQuery = rowsQuery.lte("created_at", endDate);
   if (searchOrFilter) rowsQuery = rowsQuery.or(searchOrFilter);
 
-  const [countResults, rowsResult] = await Promise.all([
-    Promise.all([
-      fetchBrokerRequirementCount(supabase, userId, brokerProfileId, { endDate, filter: "all", searchOrFilter, startDate }),
-      fetchBrokerRequirementCount(supabase, userId, brokerProfileId, { endDate, filter: "active", searchOrFilter, startDate }),
-      fetchBrokerRequirementCount(supabase, userId, brokerProfileId, { endDate, filter: "inactive", searchOrFilter, startDate }),
-      fetchBrokerRequirementCount(supabase, userId, brokerProfileId, { endDate, filter: "deleted", searchOrFilter, startDate }),
-    ]),
+  let countQuery = applyRequirementScope(
+    supabase.from("requirements").select("is_active, deleted_at"),
+    userId,
+    brokerProfileId
+  );
+  if (startDate) countQuery = countQuery.gte("created_at", startDate);
+  if (endDate) countQuery = countQuery.lte("created_at", endDate);
+  if (searchOrFilter) countQuery = countQuery.or(searchOrFilter);
+
+  const [countsResult, rowsResult] = await Promise.all([
+    countQuery,
     rowsQuery.order("created_at", { ascending: false }).range(rangeFrom, rangeTo),
   ]);
+
+  if (countsResult.error) {
+    throw new Error(countsResult.error.message || "Failed to count broker requirements.");
+  }
   if (rowsResult.error) {
     throw new Error(rowsResult.error.message || "Failed to load broker requirements.");
   }
@@ -419,7 +396,27 @@ export async function fetchAdminBrokerRequirements(
     ...requirement,
     owner: brokerSummary,
   }));
-  const [all, active, inactive, deleted] = countResults;
+
+  let all = 0;
+  let active = 0;
+  let inactive = 0;
+  let deleted = 0;
+
+  if (countsResult.data) {
+    for (const item of countsResult.data) {
+      if (item.deleted_at !== null) {
+        deleted++;
+      } else {
+        all++;
+        if (item.is_active === true) {
+          active++;
+        } else if (item.is_active === false) {
+          inactive++;
+        }
+      }
+    }
+  }
+
   const counts = { all, active, inactive, deleted };
 
   return {
@@ -840,24 +837,22 @@ async function fetchBrokerActivityRowsByTargetIds(
     searchOrFilter: string | null;
     startDate: string | null;
   }
-) {
+): Promise<BrokerActivitySourceResult[]> {
   const ids = uniqueDefinedIds(targetIds);
   if (!ids.length) return [] as BrokerActivitySourceResult[];
 
-  return Promise.all(
-    chunkIds(ids, ACTIVITY_TARGET_ID_CHUNK_SIZE).map((targetIdChunk) => {
-      const query = applyBrokerActivityRequestFilters(
-        supabase
-          .from("activity_log")
-          .select(BROKER_ACTIVITY_SELECT, { count: "exact" })
-          .eq("target_table", targetTable)
-          .in("target_id", targetIdChunk)
-          .or(`actor_user_id.is.null,actor_user_id.neq.${userId}`) as unknown as BrokerActivityQuery,
-        { endDate, searchOrFilter, startDate }
-      );
-      return fetchBrokerActivitySource(query, rangeTo);
-    })
+  const query = applyBrokerActivityRequestFilters(
+    supabase
+      .from("activity_log")
+      .select(BROKER_ACTIVITY_SELECT, { count: "exact" })
+      .eq("target_table", targetTable)
+      .in("target_id", ids)
+      .or(`actor_user_id.is.null,actor_user_id.neq.${userId}`) as unknown as BrokerActivityQuery,
+    { endDate, searchOrFilter, startDate }
   );
+
+  const result = await fetchBrokerActivitySource(query, rangeTo);
+  return [result];
 }
 
 async function fetchBrokerActivityCategoryCounts(

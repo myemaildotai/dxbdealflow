@@ -7,10 +7,14 @@ import {
   type UploadedListingDocumentMetadata,
 } from "@/lib/document-upload";
 import { triggerListingSubmittedEmail } from "@/lib/email-notifications";
+import { runEmailWorkflowInBackground } from "@/lib/email-service";
 import { getHandoverDateValidationMessage } from "@/lib/handover-date";
 import { getImageUploadValidationError } from "@/lib/image-upload";
-import { saveUploadedListingDocuments } from "@/lib/listing-documents-server";
 import { normalizeListingMediaUrl } from "@/lib/listing-media";
+import {
+  getListingPercentageValidationError,
+  parseOptionalNumericInput,
+} from "@/lib/numeric-field-validation";
 
 const MIN_LISTING_IMAGES = 1;
 const MAX_LISTING_IMAGES = 10;
@@ -64,6 +68,8 @@ export async function POST(request: NextRequest) {
   const price = Number(formData.get("price") || 0);
   const propertyType = String(formData.get("propertyType") || "apartment");
   const handoverDate = String(formData.get("handoverDate") || "").trim() || null;
+  const yieldPercentInput = String(formData.get("yieldPercent") || "");
+  const coBrokePercentInput = String(formData.get("coBrokePercent") || "");
 
   if (!title || !areaId || !price) {
     return jsonError("Title, area, and price are required.", 400);
@@ -73,6 +79,24 @@ export async function POST(request: NextRequest) {
   if (handoverDateError) {
     return jsonError(handoverDateError, 400);
   }
+
+  const yieldPercentValidationError = getListingPercentageValidationError(yieldPercentInput, {
+    invalidMessage: "Yield Percent must be numeric.",
+    maxMessage: "Yield Percent cannot exceed 100.",
+  });
+  if (yieldPercentValidationError) {
+    return jsonError(yieldPercentValidationError, 400);
+  }
+
+  const coBrokePercentValidationError = getListingPercentageValidationError(coBrokePercentInput, {
+    invalidMessage: "Co-broke Percent must be numeric.",
+    maxMessage: "Co-broke Percent cannot exceed 100.",
+  });
+  if (coBrokePercentValidationError) {
+    return jsonError(coBrokePercentValidationError, 400);
+  }
+
+  const yieldPercent = parseOptionalNumericInput(yieldPercentInput);
 
   const { data: credits } = await supabase
     .from("broker_credits")
@@ -84,65 +108,9 @@ export async function POST(request: NextRequest) {
     return jsonError("You do not have enough listing credits to publish this listing.", 400);
   }
 
-  const insertPayload = {
-    title,
-    property_type: propertyType,
-    deal_type: String(formData.get("dealType") || "secondary"),
-    bedrooms: parseNumber(String(formData.get("bedrooms") || "")),
-    size_sqft: parseNumber(String(formData.get("sizeSqft") || "")),
-    area_id: areaId,
-    developer: String(formData.get("developer") || "").trim() || null,
-    price,
-    payment_plan: String(formData.get("paymentPlan") || "").trim() || null,
-    handover_date: handoverDate,
-    yield_percent: parseNumber(String(formData.get("yieldPercent") || "")),
-    property_video_url: normalizeListingMediaUrl(String(formData.get("propertyVideoUrl") || "")),
-    notes: String(formData.get("notes") || "").trim() || null,
-    description: String(formData.get("description") || "").trim() || null,
-    status: "pending",
-    is_visible: false,
-    created_by: auth.user.id,
-    agency_id: auth.user.agency_id,
-    credits_used: 1,
-  };
+  const listingId = globalThis.crypto.randomUUID();
 
-  const { data: listing, error: createError } = await supabase
-    .from("listings")
-    .insert(insertPayload)
-    .select("id")
-    .single();
-
-  if (createError || !listing) {
-    return jsonError(createError?.message || "Failed to create listing.", 500);
-  }
-
-  const listingId = listing.id as string;
-
-  const { error: creditError } = await supabase
-    .from("broker_credits")
-    .update({
-      available_credits: credits.available_credits - 1,
-      used_credits: credits.used_credits + 1,
-    })
-    .eq("user_id", auth.user.id);
-
-  if (creditError) {
-    await supabase.from("listings").delete().eq("id", listingId);
-    return jsonError(creditError.message || "Failed to deduct credits.", 500);
-  }
-
-  const coBrokePercent = Number(formData.get("coBrokePercent") || 0);
-  const paymentTerms = String(formData.get("paymentTerms") || "").trim();
-
-  if (coBrokePercent || paymentTerms) {
-    await supabase.from("commission_terms").insert({
-      listing_id: listingId,
-      co_broke_percent: coBrokePercent,
-      payment_terms: paymentTerms || null,
-      notes: String(formData.get("notes") || "").trim() || null,
-    });
-  }
-
+  const uploadedImages = [];
   for (let index = 0; index < images.length; index += 1) {
     const file = images[index];
 
@@ -156,8 +124,7 @@ export async function POST(request: NextRequest) {
     }
 
     const { data: publicUrl } = supabase.storage.from("listing-images").getPublicUrl(storagePath);
-    await supabase.from("listing_images").insert({
-      listing_id: listingId,
+    uploadedImages.push({
       file_name: file.name,
       storage_path: storagePath,
       public_url: publicUrl.publicUrl,
@@ -166,33 +133,68 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  try {
-    await saveUploadedListingDocuments(supabase, listingId, documents);
-  } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Failed to save document.", 500);
+  const processedDocuments = [];
+  for (const doc of documents) {
+    const fileName = doc.storage_path.substring(doc.storage_path.lastIndexOf("/") + 1);
+    const newStoragePath = `${auth.user.id}/${listingId}/${fileName}`;
+    
+    const { error: copyError } = await supabase.storage
+      .from("listing-documents")
+      .copy(doc.storage_path, newStoragePath);
+      
+    if (copyError) {
+      return jsonError(copyError.message || "Failed to copy document to permanent storage.", 500);
+    }
+    
+    await supabase.storage.from("listing-documents").remove([doc.storage_path]);
+
+    const { data: publicUrl } = supabase.storage.from("listing-documents").getPublicUrl(newStoragePath);
+    processedDocuments.push({
+      file_name: doc.file_name,
+      storage_path: newStoragePath,
+      public_url: publicUrl.publicUrl,
+    });
   }
 
-  await supabase.from("chat_participants").upsert({
-    listing_id: listingId,
-    user_id: auth.user.id,
-    last_read_at: new Date().toISOString(),
+  const coBrokePercent = parseOptionalNumericInput(coBrokePercentInput) || 0;
+  const paymentTerms = String(formData.get("paymentTerms") || "").trim();
+
+  const { data: rpcResult, error: rpcError } = await supabase.rpc("create_listing_transaction", {
+    p_listing_id: listingId,
+    p_user_id: auth.user.id,
+    p_agency_id: auth.user.agency_id || null,
+    p_title: title,
+    p_property_type: propertyType,
+    p_deal_type: String(formData.get("dealType") || "secondary"),
+    p_bedrooms: parseNumber(String(formData.get("bedrooms") || "")),
+    p_size_sqft: parseNumber(String(formData.get("sizeSqft") || "")),
+    p_area_id: areaId,
+    p_developer: String(formData.get("developer") || "").trim() || null,
+    p_price: price,
+    p_payment_plan: String(formData.get("paymentPlan") || "").trim() || null,
+    p_handover_date: handoverDate,
+    p_yield_percent: yieldPercent,
+    p_property_video_url: normalizeListingMediaUrl(String(formData.get("propertyVideoUrl") || "")),
+    p_notes: String(formData.get("notes") || "").trim() || null,
+    p_description: String(formData.get("description") || "").trim() || null,
+    p_co_broke_percent: coBrokePercent,
+    p_payment_terms: paymentTerms || null,
+    p_commission_notes: String(formData.get("notes") || "").trim() || null,
+    p_images: uploadedImages,
+    p_documents: processedDocuments,
   });
 
-  await supabase.from("activity_log").insert({
-    actor_user_id: auth.user.id,
-    action: "listing_created",
-    target_table: "listings",
-    target_id: listingId,
-    metadata: { creditsUsed: 1 },
-  });
+  if (rpcError || !rpcResult) {
+    return jsonError(rpcError?.message || "Failed to create listing via transaction.", 500);
+  }
 
-  // Email trigger: broker listing submission is pending admin approval.
-  await triggerListingSubmittedEmail({
+  const emailWorkflow = triggerListingSubmittedEmail({
     listingId,
     brokerUserId: auth.user.id,
     brokerEmail: auth.user.email,
     listingTitle: title,
   });
+  runEmailWorkflowInBackground(emailWorkflow, "listing-submitted-email");
 
   return NextResponse.json({
     success: true,

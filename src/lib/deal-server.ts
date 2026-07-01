@@ -125,11 +125,87 @@ type ResolvedRequestAuth = {
   authUserId: string;
 };
 
+async function verifyJWTLocal(accessToken: string): Promise<string | null> {
+  const secret = process.env.SUPABASE_JWT_SECRET;
+  if (!secret) {
+    return null;
+  }
+
+  try {
+    const parts = accessToken.split(".");
+    if (parts.length !== 3) {
+      return null;
+    }
+
+    const [headerB64, payloadB64, signatureB64] = parts;
+
+    const base64ToUint8Array = (str: string) => {
+      let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+      while (base64.length % 4) {
+        base64 += "=";
+      }
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    };
+
+    const signatureBytes = base64ToUint8Array(signatureB64);
+    const encoder = new TextEncoder();
+    const secretBytes = encoder.encode(secret);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      secretBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+
+    const dataToVerify = encoder.encode(`${headerB64}.${payloadB64}`);
+    const isValid = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      signatureBytes,
+      dataToVerify
+    );
+
+    if (!isValid) {
+      return null;
+    }
+
+    let base64 = payloadB64.replace(/-/g, "+").replace(/_/g, "/");
+    while (base64.length % 4) {
+      base64 += "=";
+    }
+    const payloadJSON = JSON.parse(atob(base64)) as { exp?: number; sub?: string; id?: string };
+
+    const exp = payloadJSON.exp;
+    if (typeof exp === "number" && Date.now() >= exp * 1000) {
+      return null;
+    }
+
+    return payloadJSON.sub || payloadJSON.id || null;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveRequestAuth(request: NextRequest): Promise<ResolvedRequestAuth | null> {
-  const serviceSupabase = getServiceSupabase();
   const accessToken = getRequestAccessToken(request);
 
   if (accessToken) {
+    const localUserId = await verifyJWTLocal(accessToken);
+    if (localUserId) {
+      return {
+        accessToken,
+        authUserId: localUserId,
+      };
+    }
+
+    // Fallback:
+    const serviceSupabase = getServiceSupabase();
     const { data, error } = await serviceSupabase.auth.getUser(accessToken);
     if (!error && data.user) {
       return {
@@ -167,6 +243,12 @@ type RequestUserContext = {
   brokerProfileId: string | null;
 };
 
+type ProfileCacheEntry = {
+  value: RequestUserContext;
+  expiresAt: number;
+};
+const userProfileCache = new Map<string, ProfileCacheEntry>();
+
 async function getRequestUserContext(
   request: NextRequest,
   { includeBrokerProfileId = false }: { includeBrokerProfileId?: boolean } = {}
@@ -177,26 +259,37 @@ async function getRequestUserContext(
     return { user: null, brokerProfileId: null };
   }
 
+  const cacheKey = `${auth.authUserId}:${includeBrokerProfileId}`;
+  const cached = userProfileCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   const serviceSupabase = getServiceSupabase();
   const select = includeBrokerProfileId ? `${USER_SELECT}, broker_profiles(id)` : USER_SELECT;
   const { data: profile } = await serviceSupabase.from("users").select(select).eq("id", auth.authUserId).maybeSingle();
 
+  let context: RequestUserContext;
   if (!profile) {
-    return { user: null, brokerProfileId: null };
+    context = { user: null, brokerProfileId: null };
+  } else if (!includeBrokerProfileId) {
+    context = { user: profile as unknown as PlatformUser, brokerProfileId: null };
+  } else {
+    const { broker_profiles: brokerProfile, ...user } = profile as unknown as PlatformUser & {
+      broker_profiles?: { id?: string | null } | null;
+    };
+    context = {
+      user: user as PlatformUser,
+      brokerProfileId: brokerProfile?.id ?? null,
+    };
   }
 
-  if (!includeBrokerProfileId) {
-    return { user: profile as unknown as PlatformUser, brokerProfileId: null };
-  }
+  userProfileCache.set(cacheKey, {
+    value: context,
+    expiresAt: Date.now() + 10000, // 10 seconds TTL
+  });
 
-  const { broker_profiles: brokerProfile, ...user } = profile as unknown as PlatformUser & {
-    broker_profiles?: { id?: string | null } | null;
-  };
-
-  return {
-    user: user as PlatformUser,
-    brokerProfileId: brokerProfile?.id ?? null,
-  };
+  return context;
 }
 
 export async function getRequestUser(request: NextRequest) {

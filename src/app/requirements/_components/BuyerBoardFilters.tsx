@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect, useRef } from "react";
 import { REQUIREMENT_PROPERTY_TYPES, REQUIREMENT_URGENCY_OPTIONS, REQUIREMENT_BEDROOM_OPTIONS } from "@/lib/requirements";
 import { formatPropertyType, formatRequirementUrgency } from "@/lib/deal-utils";
 import { CloseIcon, FilterIcon, SortIcon } from "./BuyerBoardIcons";
@@ -34,6 +35,64 @@ export function BuyerBoardFilters({
   onClose,
 }: BuyerBoardFiltersProps) {
   const isDrawer = mode === "drawer";
+
+  const [localSearch, setLocalSearch] = useState(filters.search);
+  const [localMinBudget, setLocalMinBudget] = useState(filters.minBudget);
+  const [localMaxBudget, setLocalMaxBudget] = useState(filters.maxBudget);
+
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const minBudgetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const maxBudgetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    setLocalSearch(filters.search);
+  }, [filters.search]);
+
+  useEffect(() => {
+    setLocalMinBudget(filters.minBudget);
+  }, [filters.minBudget]);
+
+  useEffect(() => {
+    setLocalMaxBudget(filters.maxBudget);
+  }, [filters.maxBudget]);
+
+  useEffect(() => {
+    return () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+      if (minBudgetTimeoutRef.current) clearTimeout(minBudgetTimeoutRef.current);
+      if (maxBudgetTimeoutRef.current) clearTimeout(maxBudgetTimeoutRef.current);
+    };
+  }, []);
+
+  const handleSearchChange = (value: string) => {
+    setLocalSearch(value);
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    searchTimeoutRef.current = setTimeout(() => {
+      onChange({ search: value });
+    }, 300);
+  };
+
+  const handleMinBudgetChange = (value: string) => {
+    setLocalMinBudget(value);
+    if (minBudgetTimeoutRef.current) {
+      clearTimeout(minBudgetTimeoutRef.current);
+    }
+    minBudgetTimeoutRef.current = setTimeout(() => {
+      onChange({ minBudget: value });
+    }, 300);
+  };
+
+  const handleMaxBudgetChange = (value: string) => {
+    setLocalMaxBudget(value);
+    if (maxBudgetTimeoutRef.current) {
+      clearTimeout(maxBudgetTimeoutRef.current);
+    }
+    maxBudgetTimeoutRef.current = setTimeout(() => {
+      onChange({ maxBudget: value });
+    }, 300);
+  };
 
   return (
     <div className="panel max-w-full overflow-hidden rounded-[12px] border border-[#dbe4ef] shadow-[0_24px_54px_rgba(15,42,95,0.08)]">
@@ -84,8 +143,8 @@ export function BuyerBoardFilters({
                 </span>
                 <input
                   type="search"
-                  value={filters.search}
-                  onChange={(event) => onChange({ search: event.target.value })}
+                  value={localSearch}
+                  onChange={(event) => handleSearchChange(event.target.value)}
                   placeholder="Search title, location, buyer"
                   className={`${fieldClassName} pl-11`}
                 />
@@ -185,8 +244,8 @@ export function BuyerBoardFilters({
               <input
                 type="number"
                 inputMode="numeric"
-                value={filters.minBudget}
-                onChange={(event) => onChange({ minBudget: event.target.value })}
+                value={localMinBudget}
+                onChange={(event) => handleMinBudgetChange(event.target.value)}
                 placeholder="500000"
                 className={fieldClassName}
               />
@@ -197,8 +256,8 @@ export function BuyerBoardFilters({
               <input
                 type="number"
                 inputMode="numeric"
-                value={filters.maxBudget}
-                onChange={(event) => onChange({ maxBudget: event.target.value })}
+                value={localMaxBudget}
+                onChange={(event) => handleMaxBudgetChange(event.target.value)}
                 placeholder="5000000"
                 className={fieldClassName}
               />
