@@ -883,69 +883,69 @@ export default function AdminListingDetailPage() {
         <div className="min-w-0 flex-1">
           <div>
             <p className="page-kicker text-brand-orange">Admin Listing View</p>
-
-            <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <h1 className="page-title max-w-full break-words">{listing.title}</h1>
-
-              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 lg:justify-end">
-                <span className={statusClasses(statusTone)}>{statusLabel}</span>
-                <span className="badge border-[#e0e7f1] bg-white text-brand-navy xl:hidden">{formatCurrency(listing.price)}</span>
-                <span className="badge border-[#d5deed] bg-brand-panel-soft text-brand-navy">{formatPropertyType(listing.property_type)}</span>
-                <span className="badge border-[#ead8a7] bg-[#fff8e2] text-[#8b6305]">{formatDealType(listing.deal_type)}</span>
-                <span
-                  className={cn(
-                    "badge",
-                    listing.is_visible
-                      ? "border-[#bfe9d1] bg-[#edf9f2] text-[#1f8a4d]"
-                      : "border-[#d6dceb] bg-[#f6f8fb] text-[#6b7482]"
-                  )}
-                >
-                  {listing.is_visible ? "Visible" : "Hidden"}
-                </span>
-              </div>
-            </div>
+            <h1 className="mt-3 page-title max-w-full break-words">{listing.title}</h1>
           </div>
           <p className="mt-3 max-w-3xl break-words text-sm leading-7 text-brand-slate sm:text-base">
             {listing.area?.name || "Area pending"} | Added {formatDate(listing.created_at)}
           </p>
         </div>
 
-        {hasListingActions ? (
-          <div className="flex w-full min-w-0 flex-col gap-2 md:items-start xl:w-auto">
-            <div className="grid w-full gap-2 md:flex md:flex-wrap md:gap-3 xl:w-auto xl:justify-end">
-              {showNewDealAlertAction ? (
-                <button
-                  type="button"
-                  className="btn-primary w-full max-w-full md:w-auto gap-2"
-                  onClick={() => setDealAlertConfirmOpen(true)}
-                  disabled={!canSendNewDealAlert || dealAlertLoading}
-                >
-                  <DealAlertIcon className="h-4 w-4 shrink-0" />
-                  <span>{dealAlertLoading ? "Sending..." : "Send Deal Alert"}</span>
-                </button>
-              ) : null}
-
-              {moderationButtons.map((button) => (
-                <button
-                  key={button.action}
-                  type="button"
-                  className={cn(button.className, "w-full max-w-full md:w-auto")}
-                  onClick={() => setPendingAction({ action: button.action, label: button.label, prompt: button.prompt })}
-                  disabled={actionLoading}
-                >
-                  {button.label}
-                </button>
-              ))}
-            </div>
-
-            {showNewDealAlertAction ? (
-              <p className="max-w-full break-words text-xs font-medium leading-5 text-brand-slate md:pl-1">{newDealAlertCooldownState.isCoolingDown && newDealAlertAvailableAtLabel ? (
-                  <span className="text-[#875f0f]">Available on: {newDealAlertAvailableAtLabel}</span>
-                ) : null}
-              </p>
-            ) : null}
+        <div className="flex w-full min-w-0 flex-col gap-3 items-start xl:w-auto xl:items-end">
+          {/* Badges container */}
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 xl:justify-end">
+            <span className={statusClasses(statusTone)}>{statusLabel}</span>
+            <span className="badge border-[#e0e7f1] bg-white text-brand-navy xl:hidden">{formatCurrency(listing.price)}</span>
+            <span className="badge border-[#d5deed] bg-brand-panel-soft text-brand-navy">{formatPropertyType(listing.property_type)}</span>
+            <span className="badge border-[#ead8a7] bg-[#fff8e2] text-[#8b6305]">{formatDealType(listing.deal_type)}</span>
+            <span
+              className={cn(
+                "badge",
+                listing.is_visible
+                  ? "border-[#bfe9d1] bg-[#edf9f2] text-[#1f8a4d]"
+                  : "border-[#d6dceb] bg-[#f6f8fb] text-[#6b7482]"
+              )}
+            >
+              {listing.is_visible ? "Visible" : "Hidden"}
+            </span>
           </div>
-        ) : null}
+
+          {hasListingActions ? (
+            <div className="flex w-full min-w-0 flex-col gap-2 md:items-start xl:w-auto xl:items-end">
+              <div className="grid w-full gap-2 md:flex md:flex-wrap md:gap-3 xl:w-auto xl:justify-end">
+                {showNewDealAlertAction ? (
+                  <button
+                    type="button"
+                    className="btn-primary w-full max-w-full md:w-auto gap-2"
+                    onClick={() => setDealAlertConfirmOpen(true)}
+                    disabled={!canSendNewDealAlert || dealAlertLoading}
+                  >
+                    <DealAlertIcon className="h-4 w-4 shrink-0" />
+                    <span>{dealAlertLoading ? "Sending..." : "Send Deal Alert"}</span>
+                  </button>
+                ) : null}
+
+                {moderationButtons.map((button) => (
+                  <button
+                    key={button.action}
+                    type="button"
+                    className={cn(button.className, "w-full max-w-full md:w-auto")}
+                    onClick={() => setPendingAction({ action: button.action, label: button.label, prompt: button.prompt })}
+                    disabled={actionLoading}
+                  >
+                    {button.label}
+                  </button>
+                ))}
+              </div>
+
+              {showNewDealAlertAction ? (
+                <p className="max-w-full break-words text-xs font-medium leading-5 text-brand-slate md:pl-1 xl:text-right">{newDealAlertCooldownState.isCoolingDown && newDealAlertAvailableAtLabel ? (
+                    <span className="text-[#875f0f]">Available on: {newDealAlertAvailableAtLabel}</span>
+                  ) : null}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {listing.deleted_at ? (
